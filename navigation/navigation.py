@@ -10,9 +10,12 @@
 
 import cv2
 import time
+import math
 import numpy as np
 import pupil_apriltags
 import matplotlib.pyplot as plt
+from utils import Point
+
 
 import os
 os.chdir(os.path.dirname(__file__))
@@ -30,9 +33,19 @@ GAUSS_BLUR_KSIZE: int = 7
 
 BLOCK_HSV_LOWERBOUND: Tuple[int, int, int] = (17, 128, 128)
 BLOCK_HSV_UPPERBOUND: Tuple[int, int ,int] = (33, 255, 255)
-BLOCK_SIZE_THRESH: int = 0
+BLOCK_SIZE_THRESH: int = 200
 
 SELECT_CORNER_LINE_COLOR: Tuple[int, int, int] = (0, 196, 0)
+
+class Item:
+    """刻画场地中的一个物品"""
+
+    pos: Point
+    index: int
+
+    def __init__(self, _pos: Point, _index: int) -> None:
+        self.pos = _pos
+        self.index = _index
 
 class Navigator:
     """定位导航主类"""
@@ -41,10 +54,8 @@ class Navigator:
 
     image_rgb: NDArray
     """当前最新的图片, 不会自动刷新"""
-
     image_gray: NDArray
     """灰度化后的最新图片"""
-
     transformed_rgb: NDArray
     """变换后的最新图片"""
 
@@ -54,8 +65,15 @@ class Navigator:
     tag_detector: pupil_apriltags.Detector
     """探测Apriltag的detector"""
 
+    item_index_counter: int = 1
+    item_list: List[Item]
+    """场地上的物品列表"""
+
     def __init__(self) -> None:
         """初始化定位系统, 此过程需要手动标记场地的四个角点"""
+
+        # 初始化各属性
+        self.item_list = []
 
         # 初始化相机
         self.camera = cv2.VideoCapture(0)
@@ -80,26 +98,30 @@ class Navigator:
         self.transform_to_top, _unused = cv2.findHomography(np.array(corner_list), np.array([(0, TRANSFORMED_HEIGHT), (TRANSFORMED_WIDTH, TRANSFORMED_HEIGHT), (TRANSFORMED_WIDTH, 0), (0, 0)]))
 
         # 初始化tag_detector
-        self.tag_detector = pupil_apriltags.Detector(
-            families="tag36h11",
-            nthreads=1,
-            quad_decimate=1.0,
-            quad_sigma=0.0,
-            refine_edges=1,
-            decode_sharpening=0.25,
-            debug=0
-        )
+        self.tag_detector = pupil_apriltags.Detector(nthreads=4, quad_decimate=1.0)
 
         # 尚未成型的主循环
         while True:
             self.refresh_image()
-            # self.estimate_block_pose()
-            self.estimate_car_pose()
+            self.refresh_items()
+
+            temp_output = np.copy(self.transformed_rgb)
+            for item in self.item_list:
+                cv2.circle(temp_output, round(item.pos), 5, (0, 255, 0), -1)
+                cv2.putText(temp_output, str(item.index), round(item.pos), cv2.FONT_HERSHEY_COMPLEX, 1, (0, 255, 0))
+
+            cv2.imshow("a", temp_output)
+            cv2.waitKey(1)
+
+            # self.estimate_car_pose()
             time.sleep(0.1)
 
     def __tag_corner_callback(self, event: int, x: int, y: int, flags: int, params: Tuple[List[Tuple[int, int]], NDArray]) -> None:
         """生成变换矩阵时的callback函数"""
         corner_list, image_copy = params
+        if len(corner_list) == 4: # 至多取4个点
+            return
+
         if event == cv2.EVENT_LBUTTONUP:
             corner_list.append((x, y))
 
@@ -130,7 +152,7 @@ class Navigator:
             input_points = np.pad(input_points, ((0, 0), (0, 1)), 'constant', constant_values=1).T # 转化到 shape (3, N)
 
         product = np.dot(self.transform_to_top, input_points).T # (3, 3) * (3, N) = (3, N) -> (N, 3)
-        product = product[:, :2] / product[:, 2]
+        product = product[:,:2] / product[:, 2]
         if one_dim:
             product = product[0]
 
@@ -158,8 +180,36 @@ class Navigator:
         self.image_gray = cv2.cvtColor(self.image_rgb, cv2.COLOR_BGR2GRAY)
         self.transformed_rgb = cv2.warpPerspective(self.image_rgb, self.transform_to_top, dsize=(TRANSFORMED_WIDTH, TRANSFORMED_HEIGHT))
 
-    def estimate_block_pose(self) -> None:
+    def refresh_items(self):
+        new_list = self.__find_items()
+        merged_list: List[Item] = []
+
+        # 创建连边列表 Tuple[旧index, 新index, distance]
+        edges: List[Tuple[int, int, float]] = []
+        for old_index, old_item in enumerate(self.item_list):
+            edges.extend([(old_index, new_index, old_item.pos.dist_to_point(new_list[new_index].pos)) for new_index in range(len(new_list))])
+
+        # 按距离排序并建立对应关系
+        edges.sort(key=lambda tup: tup[2])
+        old_used = np.zeros(len(self.item_list))
+        new_used = np.zeros(len(new_list))
+        for link in edges:
+            if old_used[link[0]] or new_used[link[1]]:
+                continue
+            old_used[link[0]] = new_used[link[1]] = 1
+            merged_list.append(Item(new_list[link[1]].pos, self.item_list[link[0]].index))
+
+        # 让新的Item进来
+        for new_index, new_item in enumerate(new_list):
+            if not new_used[new_index]:
+                merged_list.append(Item(new_item.pos, self.item_index_counter))
+                self.item_index_counter += 1
+
+        self.item_list = merged_list
+
+    def __find_items(self) -> List[Item]:
         """识别场上的物品并计算其坐标"""
+        ret: List[Item] = []
 
         # 模糊后进行颜色筛选
         blurred = cv2.cvtColor(cv2.GaussianBlur(self.image_rgb, (GAUSS_BLUR_KSIZE*3, GAUSS_BLUR_KSIZE*3), GAUSS_BLUR_KSIZE), cv2.COLOR_BGR2HSV)
@@ -168,7 +218,6 @@ class Navigator:
         # 分离轮廓
         raw_contours, _unused = cv2.findContours(block_mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
-        temp_output = np.copy(self.image_rgb)
         for ind, contour in enumerate(raw_contours):
             if cv2.contourArea(contour) < BLOCK_SIZE_THRESH:
                 continue
@@ -178,15 +227,16 @@ class Navigator:
             pixels: NDArray[np.int32] = np.where(contour_img == 1)
             bottom_ind = np.argmax(pixels[0])
             bottom_position: Tuple[int, int] = (pixels[1][bottom_ind], pixels[0][bottom_ind])
+            transformed_position = self.transform_points(bottom_position, True)
 
-            cv2.circle(temp_output, bottom_position, 5, (0, 255, 0), -1)
-            cv2.putText(temp_output, str(ind), bottom_position, cv2.FONT_HERSHEY_COMPLEX, 1, (0, 255, 0))
-            cv2.circle(self.transformed_rgb, self.transform_points(bottom_position, True), 5, (0, 255, 0), -1)
+            # 绘制图形(调试用)
+            cv2.circle(self.transformed_rgb, transformed_position, 5, (0, 255, 0), -1)
 
-        cv2.imshow("a", self.transformed_rgb)
-        cv2.waitKey(1)
-        # plt.imshow(self.transformed_rgb)
-        # plt.show(block=False)
+            # 生成列表
+            if Point.from_tuple(transformed_position).in_range((0, TRANSFORMED_WIDTH), (0, TRANSFORMED_HEIGHT)):
+                ret.append(Item(Point.from_tuple(transformed_position), -1))
+
+        return ret
 
     def estimate_car_pose(self) -> None:
         """根据图片更新小车位姿"""
