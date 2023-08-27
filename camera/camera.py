@@ -1,9 +1,8 @@
 """
-导航模块, 按设计支持以下功能:
+场外相机模块, 按设计支持以下功能:
 
 * 物品定位
 * 小车定位
-* 路径规划(导航)
 * 获取目标区域状态
 
 """
@@ -27,8 +26,13 @@ DEBUG: bool = True
 
 RAW_IMAGE_SHAPE: Tuple[int, int] = (1920, 1080)
 
+TAG_SIZE: float = 0.12
+CAMERA_PARAMS: Tuple[float, float, float, float] = (1.07445142e+03, 1.07705605e+03, 9.59774419e+02, 5.18931806e+02)
+DISTORTION_COEFFICIENTS: List[float] = [ 0.11630427, -0.23923076, -0.0081172, 0.00069115, 0.10176633]
+
 TRANSFORMED_WIDTH: int = 1500
 TRANSFORMED_HEIGHT: int = 1000
+FIELD_SIZE: Tuple[float, float] = (3.0, 2.0)
 GAUSS_BLUR_KSIZE: int = 7
 
 BLOCK_HSV_LOWERBOUND: Tuple[int, int, int] = (17, 128, 128)
@@ -47,7 +51,7 @@ class Item:
         self.pos = _pos
         self.index = _index
 
-class Navigator:
+class Camera:
     """定位导航主类"""
 
     camera: cv2.VideoCapture
@@ -59,7 +63,7 @@ class Navigator:
     transformed_rgb: NDArray
     """变换后的最新图片"""
 
-    transform_to_top:  NDArray[np.float64]
+    transform_to_top: NDArray[np.float64]
     """将原始图像变换至俯视的变换矩阵"""
 
     tag_detector: pupil_apriltags.Detector
@@ -82,7 +86,7 @@ class Navigator:
         self.refresh_image(True)
         self.refresh_image(True) # 初始化时第一帧是无效的, 故取两帧
 
-        # 生成变换矩阵
+        # 选取四个角点
         image_copy: NDArray[np.uint8] = np.copy(self.image_rgb)
         corner_list: List[Tuple[int, int]] = []
         cv2.namedWindow("select_corner")
@@ -90,12 +94,13 @@ class Navigator:
         cv2.setMouseCallback("select_corner", self.__tag_corner_callback, param=(corner_list, image_copy))
         cv2.waitKey(-1)
 
-        assert DEBUG
-        if len(corner_list) != 4:
-            corner_list = [(354, 1014), (1443, 943), (1308, 458), (557, 565)]
-
+        # 生成变换矩阵
         assert len(corner_list) == 4
         self.transform_to_top, _unused = cv2.findHomography(np.array(corner_list), np.array([(0, TRANSFORMED_HEIGHT), (TRANSFORMED_WIDTH, TRANSFORMED_HEIGHT), (TRANSFORMED_WIDTH, 0), (0, 0)]))
+
+        # 根据相机内参求解相机外参
+        cv2.solvePnP(objectPoints=np.array([(0, 0), (FIELD_SIZE[0], 0), FIELD_SIZE, (0, FIELD_SIZE[1])]), imagePoints=corner_list,
+                     cameraMatrix=np.array([[CAMERA_PARAMS[0], 0, CAMERA_PARAMS[2]], [0, CAMERA_PARAMS[1], 0, CAMERA_PARAMS[3]], [0, 0, 1]]), distCoeffs=DISTORTION_COEFFICIENTS)
 
         # 初始化tag_detector
         self.tag_detector = pupil_apriltags.Detector(nthreads=4, quad_decimate=1.0)
@@ -116,7 +121,7 @@ class Navigator:
             # self.estimate_car_pose()
             time.sleep(0.1)
 
-    def __tag_corner_callback(self, event: int, x: int, y: int, flags: int, params: Tuple[List[Tuple[int, int]], NDArray]) -> None:
+    def __tag_corner_callback(self, event: int, x: int, y: int, flags: int, params: Tuple[List[Tuple[int, int]], NDArray[np.uint8]]) -> None:
         """生成变换矩阵时的callback函数"""
         corner_list, image_copy = params
         if len(corner_list) == 4: # 至多取4个点
@@ -181,6 +186,7 @@ class Navigator:
         self.transformed_rgb = cv2.warpPerspective(self.image_rgb, self.transform_to_top, dsize=(TRANSFORMED_WIDTH, TRANSFORMED_HEIGHT))
 
     def refresh_items(self):
+        """更新物品位置"""
         new_list = self.__find_items()
         merged_list: List[Item] = []
 
@@ -233,14 +239,14 @@ class Navigator:
             cv2.circle(self.transformed_rgb, transformed_position, 5, (0, 255, 0), -1)
 
             # 生成列表
-            if Point.from_tuple(transformed_position).in_range((0, TRANSFORMED_WIDTH), (0, TRANSFORMED_HEIGHT)):
-                ret.append(Item(Point.from_tuple(transformed_position), -1))
+            if Point(*transformed_position).in_range((0, TRANSFORMED_WIDTH), (0, TRANSFORMED_HEIGHT)):
+                ret.append(Item(Point(*transformed_position), -1))
 
         return ret
 
     def estimate_car_pose(self) -> None:
         """根据图片更新小车位姿"""
-        dets = self.tag_detector.detect(self.image_gray) # type: ignore
+        dets = self.tag_detector.detect(self.image_gray, True, CAMERA_PARAMS, TAG_SIZE) # type: ignore
 
         for det in dets:
             cv2.circle(self.image_rgb, np.round(det.center).astype(np.int32), 10, (0, 255, 0), 2)
@@ -249,10 +255,4 @@ class Navigator:
         cv2.waitKey(1)
 
 if __name__ == "__main__":
-    Navigator()
-    
-def 路径规划(小车位姿, 目标):
-    小车转向目标
-
-    前进若干距离直至接近目标
-    
+    Camera()

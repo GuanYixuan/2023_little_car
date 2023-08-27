@@ -46,6 +46,8 @@ class Point:
             return self.y
         else:
             raise ValueError("下标越界")
+    def __len__(self) -> int:
+        return 2
 
     def in_range(self, x_rng: Tuple[float, float] = (-np.inf, np.inf), y_rng: Tuple[float, float] = (-np.inf, np.inf)) -> bool:
         """判断此Point对象的x,y坐标是否均在给定范围内
