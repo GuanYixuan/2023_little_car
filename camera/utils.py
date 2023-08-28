@@ -1,9 +1,25 @@
 """一些辅助函数或辅助类"""
 
+import cv2
 import math
 import numpy as np
 
-from typing import Iterable, Tuple
+from typing import Iterable, Tuple, Any
+from typing import TYPE_CHECKING, TypeVar, Literal, Protocol
+from numpy import dtype
+
+if TYPE_CHECKING:
+    Size = TypeVar("Size", bound=str, covariant=True)
+    ScalarType = TypeVar("ScalarType", bound=np.generic, covariant=True)
+
+    Shaped_NDArray = np.ndarray[Size, dtype[ScalarType]]
+    """大小确定的np.ndarray, 用于对返回值进行类型注释"""
+    class Shaped_array(np.ndarray, Protocol[Size, ScalarType]): # type: ignore
+        """大小确定的数组(但不必是np.ndarray), 用于对入参进行类型注释"""
+        def __getitem__(self, __i: Any) -> Any: ...
+else:
+    Shaped_NDArray = Tuple
+    Shaped_array = Tuple
 
 class Point:
     """二维向量/二维点类"""
@@ -74,3 +90,24 @@ class Point:
         """计算该从点指向另一点的向量的幅角主值"""
         assert isinstance(other, Point)
         return (other - self).to_rad()
+
+def construct_pose_cv2(rvec: Shaped_array[Literal["(3,)"], np.float64], tvec: Shaped_array[Literal["(3,)"], np.float64]) -> Shaped_NDArray[Literal["(4,4)"], np.float64]:
+    """从cv2返回的旋转向量`rvec`与平移向量`tvec`构造4x4位姿变换矩阵"""
+    ret = np.zeros((4, 4), np.float64)
+    ret[0:3, 0:3] = cv2.Rodrigues(rvec)[0]
+    ret[0:3, 3] = np.reshape(tvec, 3)
+    ret[3, 3] = 1
+    return ret
+def construct_pose_tag(R: Shaped_array[Literal["(3,3)"], np.float64], t: Shaped_array[Literal["(3,)"], np.float64]) -> Shaped_NDArray[Literal["(4,4)"], np.float64]:
+    """从旋转矩阵`R`与平移向量`t`构造4x4位姿变换矩阵"""
+    ret = np.zeros((4, 4), np.float64)
+    ret[0:3, 0:3] = R
+    ret[0:3, 3] = np.reshape(t, 3)
+    ret[3, 3] = 1
+    return ret
+def pose_translation(pose: Shaped_array[Literal["(4,4)"], np.float64]) -> Shaped_NDArray[Literal["(3,)"], np.float64]:
+    """从4x4位姿变换矩阵中提取平移向量"""
+    return np.reshape(pose[0:3, 3], 3)
+def pose_rotation(pose: Shaped_array[Literal["(4,4)"], np.float64]) -> Shaped_NDArray[Literal["(3,3)"], np.float64]:
+    """从4x4位姿变换矩阵中提取旋转矩阵"""
+    return pose[0:3, 0:3]

@@ -6,21 +6,21 @@
 * 获取目标区域状态
 
 """
-
-import cv2
-import time
-import math
-import numpy as np
-import pupil_apriltags
-import matplotlib.pyplot as plt
-from utils import Point
-
-
 import os
 os.chdir(os.path.dirname(__file__))
 
+import cv2
+import time
+import numpy as np
+import pupil_apriltags
+import matplotlib.pyplot as plt
+
+import utils
+from utils import Point
+
+from typing import Literal, List, Tuple
 from numpy.typing import NDArray
-from typing import List, Tuple
+from utils import Shaped_array, Shaped_NDArray
 
 DEBUG: bool = True
 
@@ -28,11 +28,12 @@ RAW_IMAGE_SHAPE: Tuple[int, int] = (1920, 1080)
 
 TAG_SIZE: float = 0.12
 CAMERA_PARAMS: Tuple[float, float, float, float] = (1.07445142e+03, 1.07705605e+03, 9.59774419e+02, 5.18931806e+02)
+CAMERA_MATRIX: NDArray[np.float64] = np.array([[CAMERA_PARAMS[0], 0, CAMERA_PARAMS[2]], [0, CAMERA_PARAMS[1], CAMERA_PARAMS[3]], [0, 0, 1]])
 DISTORTION_COEFFICIENTS: List[float] = [ 0.11630427, -0.23923076, -0.0081172, 0.00069115, 0.10176633]
 
-TRANSFORMED_WIDTH: int = 1500
-TRANSFORMED_HEIGHT: int = 1000
-FIELD_SIZE: Tuple[float, float] = (3.0, 2.0)
+TRANSFORMED_WIDTH: int = 700
+TRANSFORMED_HEIGHT: int = 700
+FIELD_SIZE: Tuple[float, float] = (0.8, 0.8)
 GAUSS_BLUR_KSIZE: int = 7
 
 BLOCK_HSV_LOWERBOUND: Tuple[int, int, int] = (17, 128, 128)
@@ -56,12 +57,15 @@ class Camera:
 
     camera: cv2.VideoCapture
 
+    camera_pose: Shaped_NDArray[Literal["(4,4)"], np.float64]
+    """相机位姿"""
+
     image_rgb: NDArray
-    """当前最新的图片, 不会自动刷新"""
+    """当前最新的图片, 已去畸变"""
     image_gray: NDArray
-    """灰度化后的最新图片"""
+    """灰度化后的最新图片, 已去畸变"""
     transformed_rgb: NDArray
-    """变换后的最新图片"""
+    """变换后的最新图片, 已去畸变"""
 
     transform_to_top: NDArray[np.float64]
     """将原始图像变换至俯视的变换矩阵"""
@@ -75,6 +79,7 @@ class Camera:
 
     def __init__(self) -> None:
         """初始化定位系统, 此过程需要手动标记场地的四个角点"""
+        np.set_printoptions(4, suppress=True)
 
         # 初始化各属性
         self.item_list = []
@@ -95,12 +100,15 @@ class Camera:
         cv2.waitKey(-1)
 
         # 生成变换矩阵
+        corner_list = [(1107, 971), (1116, 30), (783, 240), (791, 765)]
         assert len(corner_list) == 4
         self.transform_to_top, _unused = cv2.findHomography(np.array(corner_list), np.array([(0, TRANSFORMED_HEIGHT), (TRANSFORMED_WIDTH, TRANSFORMED_HEIGHT), (TRANSFORMED_WIDTH, 0), (0, 0)]))
 
         # 根据相机内参求解相机外参
-        cv2.solvePnP(objectPoints=np.array([(0, 0), (FIELD_SIZE[0], 0), FIELD_SIZE, (0, FIELD_SIZE[1])]), imagePoints=corner_list,
-                     cameraMatrix=np.array([[CAMERA_PARAMS[0], 0, CAMERA_PARAMS[2]], [0, CAMERA_PARAMS[1], 0, CAMERA_PARAMS[3]], [0, 0, 1]]), distCoeffs=DISTORTION_COEFFICIENTS)
+        succ, rvec, tvec = cv2.solvePnP(objectPoints=np.array([(0, 0, 0), (FIELD_SIZE[0], 0, 0), (*FIELD_SIZE, 0), (0, FIELD_SIZE[1], 0)]),
+                                        imagePoints=np.array(corner_list, dtype=np.float64), cameraMatrix=CAMERA_MATRIX, distCoeffs=None)
+        assert succ, "相机外参求解失败"
+        self.camera_pose = np.linalg.inv(utils.construct_pose_cv2(rvec, tvec))
 
         # 初始化tag_detector
         self.tag_detector = pupil_apriltags.Detector(nthreads=4, quad_decimate=1.0)
@@ -109,6 +117,7 @@ class Camera:
         while True:
             self.refresh_image()
             self.refresh_items()
+            self.estimate_car_pose()
 
             temp_output = np.copy(self.transformed_rgb)
             for item in self.item_list:
@@ -118,7 +127,6 @@ class Camera:
             cv2.imshow("a", temp_output)
             cv2.waitKey(1)
 
-            # self.estimate_car_pose()
             time.sleep(0.1)
 
     def __tag_corner_callback(self, event: int, x: int, y: int, flags: int, params: Tuple[List[Tuple[int, int]], NDArray[np.uint8]]) -> None:
@@ -138,7 +146,7 @@ class Camera:
             cv2.drawMarker(image_copy, (x, y), (0, 255, 0), cv2.MARKER_CROSS, 15, 2)
             cv2.imshow("select_corner", image_copy)
 
-    def transform_points(self, input_points: "Tuple | NDArray", round: bool = False) -> NDArray:
+    def transform_points(self, input_points: "Tuple | NDArray[np.float64]", round: bool = False) -> NDArray[np.float64]:
         """对一个或一系列坐标施加变换
 
         Args:
@@ -169,9 +177,6 @@ class Camera:
     def refresh_image(self, init: bool = False) -> None:
         """阻塞式地刷新图片"""
 
-        # self.image_rgb = cv2.imread("test_images/desk_high.jpg") # 造点假
-        # self.image_rgb = cv2.resize(self.image_rgb, (1920, 1080))
-
         while True:
             success, self.image_rgb = self.camera.read()
             if success:
@@ -182,6 +187,7 @@ class Camera:
             return
 
         # 进行图片变换
+        self.image_rgb = cv2.undistort(self.image_rgb, CAMERA_MATRIX, np.array(DISTORTION_COEFFICIENTS))
         self.image_gray = cv2.cvtColor(self.image_rgb, cv2.COLOR_BGR2GRAY)
         self.transformed_rgb = cv2.warpPerspective(self.image_rgb, self.transform_to_top, dsize=(TRANSFORMED_WIDTH, TRANSFORMED_HEIGHT))
 
@@ -249,6 +255,8 @@ class Camera:
         dets = self.tag_detector.detect(self.image_gray, True, CAMERA_PARAMS, TAG_SIZE) # type: ignore
 
         for det in dets:
+            tag_pose = self.camera_pose @ utils.construct_pose_tag(det.pose_R, det.pose_t)
+            print(tag_pose)
             cv2.circle(self.image_rgb, np.round(det.center).astype(np.int32), 10, (0, 255, 0), 2)
 
         cv2.imshow("w", self.image_rgb)
