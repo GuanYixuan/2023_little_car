@@ -2,11 +2,13 @@
 
 import cv2
 import math
+import threading
 import numpy as np
 
-from typing import Iterable, Tuple, Any
+from typing import Iterable, Optional, Tuple, Any
 from typing import TYPE_CHECKING, TypeVar, Literal, Protocol
 from numpy import dtype
+from numpy.typing import NDArray
 
 if TYPE_CHECKING:
     Size = TypeVar("Size", bound=str, covariant=True)
@@ -61,7 +63,7 @@ class Point:
         elif index == 1:
             return self.y
         else:
-            raise ValueError("下标越界")
+            raise IndexError("下标越界")
     def __len__(self) -> int:
         return 2
 
@@ -90,6 +92,80 @@ class Point:
         """计算该从点指向另一点的向量的幅角主值"""
         assert isinstance(other, Point)
         return (other - self).to_rad()
+
+class Realtime_camera(threading.Thread):
+    '''Always getting the most recent frame of a camera
+
+    Modified from https://gist.github.com/crackwitz/15c3910f243a42dcd9d4a40fcdb24e40
+    '''
+    capture: cv2.VideoCapture
+
+    cond: threading.Condition
+    """This lets the read() method block until there's a new frame"""
+    running: bool
+    """This allows us to stop the thread gracefully"""
+    frame: NDArray[np.uint8]
+    """Keeping the newest frame around"""
+
+    def __init__(self, capture: cv2.VideoCapture, name='FreshestFrame'):
+        self.capture = capture
+        assert self.capture.isOpened(), "相机未开启"
+
+        self.cond = threading.Condition()
+
+        self.running = False
+
+        # passing a sequence number allows read() to NOT block
+        # if the currently available one is exactly the one you ask for
+        self.latestnum = 0
+
+        super().__init__(name=name)
+        self.start()
+
+    def __del__(self):
+        self.running = False
+        self.join(timeout=1)
+        self.capture.release()
+
+    def start(self):
+        self.running = True
+        super().start()
+
+    def run(self):
+        counter = 0
+        while self.running:
+            # block for fresh frame
+            while self.running:
+                rv, img = self.capture.read()
+                if rv:
+                    break
+            counter += 1
+
+            # publish the frame
+            with self.cond: # lock the condition for this operation
+                self.frame = img # type: ignore
+                self.latestnum = counter
+                self.cond.notify_all()
+
+    def read(self, wait: bool = True, seqnumber: Optional[int] = None, timeout: Optional[float] = None):
+        # with no arguments (wait=True), it always blocks for a fresh frame
+        # with wait=False it returns the current frame immediately (polling)
+        # with a seqnumber, it blocks until that frame is available (or no wait at all)
+        # with timeout argument, may return an earlier frame;
+        #   may even be (0,None) if nothing received yet
+
+        with self.cond:
+            if wait:
+                if seqnumber is None:
+                    seqnumber = self.latestnum+1
+                if seqnumber < 1:
+                    seqnumber = 1
+
+                rv = self.cond.wait_for(lambda: self.latestnum >= seqnumber, timeout=timeout)
+                if not rv:
+                    return (self.latestnum, self.frame)
+
+            return (self.latestnum, self.frame)
 
 def construct_pose_cv2(rvec: Shaped_array[Literal["(3,)"], np.float64], tvec: Shaped_array[Literal["(3,)"], np.float64]) -> Shaped_NDArray[Literal["(4,4)"], np.float64]:
     """从cv2返回的旋转向量`rvec`与平移向量`tvec`构造4x4位姿变换矩阵"""

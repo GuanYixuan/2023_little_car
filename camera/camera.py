@@ -11,12 +11,13 @@ os.chdir(os.path.dirname(__file__))
 
 import cv2
 import time
+import math
 import numpy as np
 import pupil_apriltags
 import matplotlib.pyplot as plt
 
 import utils
-from utils import Point
+from utils import Point, Realtime_camera
 
 from typing import Literal, List, Tuple
 from numpy.typing import NDArray
@@ -24,41 +25,50 @@ from utils import Shaped_array, Shaped_NDArray
 
 DEBUG: bool = True
 
-RAW_IMAGE_SHAPE: Tuple[int, int] = (1920, 1080)
+RAW_IMAGE_SHAPE: Tuple[int, int] = (1280, 720)
 
 TAG_SIZE: float = 0.12
-CAMERA_PARAMS: Tuple[float, float, float, float] = (1.07445142e+03, 1.07705605e+03, 9.59774419e+02, 5.18931806e+02)
+CAMERA_PARAMS: Tuple[float, float, float, float] = (974.27198357, 976.89535927, 621.55607339, 365.47265865)
 CAMERA_MATRIX: NDArray[np.float64] = np.array([[CAMERA_PARAMS[0], 0, CAMERA_PARAMS[2]], [0, CAMERA_PARAMS[1], CAMERA_PARAMS[3]], [0, 0, 1]])
-DISTORTION_COEFFICIENTS: List[float] = [ 0.11630427, -0.23923076, -0.0081172, 0.00069115, 0.10176633]
+DISTORTION_COEFFICIENTS: List[float] = [0.1319229, -0.28063953, 0.00082234, -0.00546549, 0.1388977]
 
+FIELD_SIZE: Tuple[float, float] = (1.6, 1.6)
 TRANSFORMED_WIDTH: int = 700
-TRANSFORMED_HEIGHT: int = 700
-FIELD_SIZE: Tuple[float, float] = (0.8, 0.8)
-GAUSS_BLUR_KSIZE: int = 7
+TRANSFORMED_HEIGHT: int = round(TRANSFORMED_WIDTH * FIELD_SIZE[1] / FIELD_SIZE[0]) # 保证变换后的图片与真实长度是成比例的
+GAUSS_BLUR_KSIZE: int = 3
 
-BLOCK_HSV_LOWERBOUND: Tuple[int, int, int] = (17, 128, 128)
+BLOCK_HSV_LOWERBOUND: Tuple[int, int, int] = (17, 96, 128)
 BLOCK_HSV_UPPERBOUND: Tuple[int, int ,int] = (33, 255, 255)
-BLOCK_SIZE_THRESH: int = 200
+BLOCK_SIZE_THRESH: int = 30
+BLOCK_DISPLAY_COLOR: Tuple[int, int ,int] = (0, 255, 0)
 
 SELECT_CORNER_LINE_COLOR: Tuple[int, int, int] = (0, 196, 0)
 
 class Item:
     """刻画场地中的一个物品"""
 
-    pos: Point
+    pixel_pos: Point
+    """物品在俯视图中的 *像素坐标* """
     index: int
 
-    def __init__(self, _pos: Point, _index: int) -> None:
-        self.pos = _pos
+    def __init__(self, _pixel_pos: Point, _index: int) -> None:
+        self.pixel_pos = _pixel_pos
         self.index = _index
+
+    @property
+    def real_coord(self) -> Point:
+        """物品在场地坐标系下真实坐标"""
+        return Point(self.pixel_pos.x, TRANSFORMED_HEIGHT - self.pixel_pos.y) * (FIELD_SIZE[0] / TRANSFORMED_WIDTH)
 
 class Camera:
     """定位导航主类"""
 
-    camera: cv2.VideoCapture
+    camera: Realtime_camera
 
     camera_pose: Shaped_NDArray[Literal["(4,4)"], np.float64]
     """相机位姿"""
+    car_pose: Tuple[Point, float]
+    """小车位姿, 表示为(真实坐标, 指向角)"""
 
     image_rgb: NDArray
     """当前最新的图片, 已去畸变"""
@@ -85,9 +95,8 @@ class Camera:
         self.item_list = []
 
         # 初始化相机
-        self.camera = cv2.VideoCapture(0)
-        assert self.camera.isOpened(), "相机未开启"
-        assert RAW_IMAGE_SHAPE == (self.camera.get(cv2.CAP_PROP_FRAME_WIDTH), self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT)), "分辨率校验未通过"
+        self.camera = Realtime_camera(cv2.VideoCapture('https://192.168.137.186:8080/video'))
+        assert RAW_IMAGE_SHAPE == (self.camera.capture.get(cv2.CAP_PROP_FRAME_WIDTH), self.camera.capture.get(cv2.CAP_PROP_FRAME_HEIGHT)), "分辨率校验未通过"
         self.refresh_image(True)
         self.refresh_image(True) # 初始化时第一帧是无效的, 故取两帧
 
@@ -100,7 +109,7 @@ class Camera:
         cv2.waitKey(-1)
 
         # 生成变换矩阵
-        corner_list = [(1107, 971), (1116, 30), (783, 240), (791, 765)]
+        corner_list = [(230, 480), (1062, 472), (880, 123), (389, 127)]
         assert len(corner_list) == 4
         self.transform_to_top, _unused = cv2.findHomography(np.array(corner_list), np.array([(0, TRANSFORMED_HEIGHT), (TRANSFORMED_WIDTH, TRANSFORMED_HEIGHT), (TRANSFORMED_WIDTH, 0), (0, 0)]))
 
@@ -119,15 +128,28 @@ class Camera:
             self.refresh_items()
             self.estimate_car_pose()
 
-            temp_output = np.copy(self.transformed_rgb)
+            # 绘制物品坐标
+            temp_output: NDArray[np.uint8] = np.copy(self.transformed_rgb)
+            scale_factor: float = FIELD_SIZE[0] / TRANSFORMED_WIDTH
             for item in self.item_list:
-                cv2.circle(temp_output, round(item.pos), 5, (0, 255, 0), -1)
-                cv2.putText(temp_output, str(item.index), round(item.pos), cv2.FONT_HERSHEY_COMPLEX, 1, (0, 255, 0))
+                cv2.circle(temp_output, round(item.pixel_pos), 4, BLOCK_DISPLAY_COLOR, -1)
+                out_str = "%d (%.2f, %.2f)" % (item.index, *item.real_coord)
+                cv2.putText(temp_output, out_str, round(item.pixel_pos), cv2.FONT_HERSHEY_COMPLEX, 0.5, BLOCK_DISPLAY_COLOR)
+
+            # 绘制小车位置与方向
+            if hasattr(self, "car_pose"):
+                car_pixel_pos = self.car_pose[0] / scale_factor
+                car_pixel_pos.y = TRANSFORMED_HEIGHT - car_pixel_pos.y
+                cv2.circle(temp_output, round(car_pixel_pos), 6, (0, 255, 0), -1)
+                cv2.arrowedLine(temp_output, round(car_pixel_pos), round(car_pixel_pos + Point(math.cos(self.car_pose[1]), -math.sin(self.car_pose[1])) * 50), (0, 255, 0), 2, tipLength=0.2)
 
             cv2.imshow("a", temp_output)
             cv2.waitKey(1)
 
             time.sleep(0.1)
+
+    def __del__(self) -> None:
+        del self.camera
 
     def __tag_corner_callback(self, event: int, x: int, y: int, flags: int, params: Tuple[List[Tuple[int, int]], NDArray[np.uint8]]) -> None:
         """生成变换矩阵时的callback函数"""
@@ -143,7 +165,7 @@ class Camera:
                 cv2.line(image_copy, (x, y), corner_list[-2], SELECT_CORNER_LINE_COLOR, 2, cv2.LINE_AA)
             if len(corner_list) == 4:
                 cv2.line(image_copy, (x, y), corner_list[0], SELECT_CORNER_LINE_COLOR, 2, cv2.LINE_AA)
-            cv2.drawMarker(image_copy, (x, y), (0, 255, 0), cv2.MARKER_CROSS, 15, 2)
+            cv2.drawMarker(image_copy, (x, y), (0, 255, 0), cv2.MARKER_CROSS, 15, 1)
             cv2.imshow("select_corner", image_copy)
 
     def transform_points(self, input_points: "Tuple | NDArray[np.float64]", round: bool = False) -> NDArray[np.float64]:
@@ -199,7 +221,7 @@ class Camera:
         # 创建连边列表 Tuple[旧index, 新index, distance]
         edges: List[Tuple[int, int, float]] = []
         for old_index, old_item in enumerate(self.item_list):
-            edges.extend([(old_index, new_index, old_item.pos.dist_to_point(new_list[new_index].pos)) for new_index in range(len(new_list))])
+            edges.extend([(old_index, new_index, old_item.real_coord.dist_to_point(new_list[new_index].real_coord)) for new_index in range(len(new_list))])
 
         # 按距离排序并建立对应关系
         edges.sort(key=lambda tup: tup[2])
@@ -209,12 +231,12 @@ class Camera:
             if old_used[link[0]] or new_used[link[1]]:
                 continue
             old_used[link[0]] = new_used[link[1]] = 1
-            merged_list.append(Item(new_list[link[1]].pos, self.item_list[link[0]].index))
+            merged_list.append(Item(new_list[link[1]].pixel_pos, self.item_list[link[0]].index))
 
         # 让新的Item进来
         for new_index, new_item in enumerate(new_list):
             if not new_used[new_index]:
-                merged_list.append(Item(new_item.pos, self.item_index_counter))
+                merged_list.append(Item(new_item.pixel_pos, self.item_index_counter))
                 self.item_index_counter += 1
 
         self.item_list = merged_list
@@ -224,7 +246,7 @@ class Camera:
         ret: List[Item] = []
 
         # 模糊后进行颜色筛选
-        blurred = cv2.cvtColor(cv2.GaussianBlur(self.image_rgb, (GAUSS_BLUR_KSIZE*3, GAUSS_BLUR_KSIZE*3), GAUSS_BLUR_KSIZE), cv2.COLOR_BGR2HSV)
+        blurred = cv2.cvtColor(cv2.GaussianBlur(self.image_rgb, (GAUSS_BLUR_KSIZE, GAUSS_BLUR_KSIZE), GAUSS_BLUR_KSIZE/3), cv2.COLOR_BGR2HSV)
         block_mask = cv2.inRange(blurred, BLOCK_HSV_LOWERBOUND, BLOCK_HSV_UPPERBOUND) # type: ignore
 
         # 分离轮廓
@@ -252,11 +274,23 @@ class Camera:
 
     def estimate_car_pose(self) -> None:
         """根据图片更新小车位姿"""
-        dets = self.tag_detector.detect(self.image_gray, True, CAMERA_PARAMS, TAG_SIZE) # type: ignore
+        dets = self.tag_detector.detect(self.image_gray, True, CAMERA_PARAMS, TAG_SIZE)
 
+        tag_found: bool = False
         for det in dets:
+            if det.decision_margin < 20: # 筛选Tag
+                continue
+            assert not tag_found, "找到了多于一个AprilTag"
+            tag_found = True
+
+            # 计算tag外参
             tag_pose = self.camera_pose @ utils.construct_pose_tag(det.pose_R, det.pose_t)
-            print(tag_pose)
+
+            # 提取平面的小车位姿
+            weird_axes: bool = abs(tag_pose[2, 2]) < abs(tag_pose[1, 2]) # 假如旋转矩阵的三个轴排列方式比较奇怪
+            self.car_pose = (Point(*utils.pose_translation(tag_pose)[:2]), math.atan2(tag_pose[2, 0] if weird_axes else tag_pose[1, 0], tag_pose[0, 0]))
+            print(weird_axes, self.car_pose[1])
+            print(utils.pose_rotation(tag_pose))
             cv2.circle(self.image_rgb, np.round(det.center).astype(np.int32), 10, (0, 255, 0), 2)
 
         cv2.imshow("w", self.image_rgb)
