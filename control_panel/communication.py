@@ -29,6 +29,8 @@ class Serial_handler:
 
     ping_cond: threading.Condition
     """用于ping指令的同步变量"""
+    recv_cond: threading.Condition
+    """用于接收信息的同步变量"""
 
     def __init__(self, serial_name: str, baudrate: int) -> None:
         # 属性初始化
@@ -36,12 +38,13 @@ class Serial_handler:
         self.message_queue = []
         self.instruction_queue = []
         self.serial_instance = serial.Serial(serial_name, baudrate)
-        self.serial_instance.timeout = 1
+        self.serial_instance.timeout = 0.1
 
         # 各线程初始化
         self.ping_cond = threading.Condition()
-        self.feeder_thread = threading.Thread(target=self.__instruction_feeder, name="Serial_handler-instruction_feeder")
-        self.receiver_thread = threading.Thread(target=self.__message_receiver, name="Serial_handler-message_receiver")
+        self.recv_cond = threading.Condition()
+        self.feeder_thread = threading.Thread(target=self.__instruction_feeder, name="Serial_handler-instruction_feeder", daemon=True)
+        self.receiver_thread = threading.Thread(target=self.__message_receiver, name="Serial_handler-message_receiver", daemon=True)
         self.feeder_thread.start()
         self.receiver_thread.start()
 
@@ -55,25 +58,25 @@ class Serial_handler:
         """非阻塞地向小车发送转向指令
 
         Args:
-            angle (int): 逆时针转动的角度数
+            `angle` (int): 逆时针转动的角度数
         """
         self.instruction_queue.append(bytes([0x10]) + angle.to_bytes(2, 'little', signed=True) + bytes([0 for i in range(5)]))
     def inst_shift(self, forward: int, shift_right: int) -> None:
         """非阻塞地向小车发送平移指令
 
         Args:
-            forward (int): 小车前进的毫米数
-            shift_right (int): 小车向右平移的毫米数
+            `forward` (int): 小车前进的毫米数
+            `shift_right` (int): 小车向右平移的毫米数
         """
         self.instruction_queue.append(bytes([0x20]) + forward.to_bytes(2, 'little', signed=True) + shift_right.to_bytes(2, 'little', signed=True) + bytes([0, 0, 0]))
     def inst_echo(self, content: str) -> None:
         """非阻塞地向STM32发送回显指令
 
         Args:
-            content (str): 要向回显的信息, 注意不能超过7字节
+            `content` (str): 要向回显的信息, 注意不能超过7字节
 
         Raises:
-            AssertionError: 要发送的信息包含非ASCII字节或过长
+            `AssertionError`: 要发送的信息包含非ASCII字节或过长
         """
         assert len(content) <= STM32_INSTRUCTION_LENGTH - 1 and content.isascii()
         padding = bytes([0 for i in range(STM32_INSTRUCTION_LENGTH - 1 - len(content))])
@@ -83,10 +86,10 @@ class Serial_handler:
         """非阻塞地向OpenMV发送信息, 该信息会通过STM32进行转发
 
         Args:
-            content (bytes): 要向OpenMV发送的信息, 注意不能超过7字节
+            `content` (bytes): 要向OpenMV发送的信息, 注意不能超过7字节
 
         Raises:
-            AssertionError: 要发送的信息过长
+            `AssertionError`: 要发送的信息过长
         """
         assert len(content) <= STM32_INSTRUCTION_LENGTH - 1, "要发送的消息过长"
         if len(content) < STM32_INSTRUCTION_LENGTH - 1:
@@ -117,23 +120,36 @@ class Serial_handler:
                 self.instruction_queue.pop(0)
     def __message_receiver(self) -> None:
         """信息接收线程"""
+        buffer = bytes()
         while self.running:
-            need_append: bool = True
-            new_message = self.serial_instance.read_until()
+            new_bytes = self.serial_instance.read_all()
+            assert isinstance(new_bytes, bytes)
+            buffer += new_bytes
 
-            if len(new_message) == 0:
+            slice_position = buffer.find(bytes([ord('\n')]))
+            if slice_position < 0:
                 continue
+            new_message = buffer[:slice_position]
 
+            # 区分PING_ECHO包并提前处理
+            need_append: bool = True
             try:
-                if new_message.decode().upper() == PING_ECHO_CONTENT:
+                if new_message.decode().upper() == PING_ECHO_CONTENT[:-1]:
                     need_append = False
                     with self.ping_cond:
                         self.ping_cond.notify_all()
             except UnicodeDecodeError:
                 pass
 
+            # 将消息加入队列
             if need_append:
                 self.message_queue.append(new_message)
+
+                # 通知各个正在等待的线程
+                with self.recv_cond:
+                    self.recv_cond.notify_all()
+
+            buffer = buffer[slice_position+1:]
 
 if __name__ == "__main__":
     ser = Serial_handler("COM9", 9600)
@@ -142,7 +158,7 @@ if __name__ == "__main__":
         while True:
             print("%.2f" % ser.ping_STM32(2))
             if len(ser.message_queue):
-                print(ser.message_queue.pop(0).decode().rstrip())
+                print(ser.message_queue.pop(0).decode())
             time.sleep(1)
     except KeyboardInterrupt:
         pass
