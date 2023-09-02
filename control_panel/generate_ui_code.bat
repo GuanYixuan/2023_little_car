@@ -1,1 +1,1 @@
-pyuic5 "main.ui" > "ui_main_window.py"
+pyuic6 "main.ui" > "ui_main_window.py"
