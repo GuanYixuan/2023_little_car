@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1301</width>
-    <height>848</height>
+    <width>1299</width>
+    <height>914</height>
    </rect>
   </property>
   <property name="sizePolicy">
@@ -24,7 +24,7 @@
     <property name="geometry">
      <rect>
       <x>10</x>
-      <y>640</y>
+      <y>720</y>
       <width>541</width>
       <height>141</height>
      </rect>
@@ -384,8 +384,8 @@
      <rect>
       <x>10</x>
       <y>10</y>
-      <width>900</width>
-      <height>600</height>
+      <width>931</width>
+      <height>701</height>
      </rect>
     </property>
     <property name="verticalScrollBarPolicy">
@@ -402,7 +402,7 @@
     <property name="geometry">
      <rect>
       <x>570</x>
-      <y>640</y>
+      <y>720</y>
       <width>421</width>
       <height>141</height>
      </rect>
@@ -424,7 +424,7 @@
      </property>
      <layout class="QFormLayout" name="formLayout">
       <property name="horizontalSpacing">
-       <number>10</number>
+       <number>15</number>
       </property>
       <property name="verticalSpacing">
        <number>10</number>
@@ -434,11 +434,14 @@
         <property name="font">
          <font>
           <family>宋体</family>
-          <pointsize>12</pointsize>
+          <pointsize>11</pointsize>
          </font>
         </property>
         <property name="text">
-         <string/>
+         <string>未见小车</string>
+        </property>
+        <property name="textFormat">
+         <enum>Qt::RichText</enum>
         </property>
        </widget>
       </item>
@@ -479,11 +482,37 @@
         <property name="font">
          <font>
           <family>宋体</family>
+          <pointsize>11</pointsize>
+         </font>
+        </property>
+        <property name="text">
+         <string>未见小车</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="label_positioning_method">
+        <property name="font">
+         <font>
+          <family>宋体</family>
           <pointsize>12</pointsize>
          </font>
         </property>
         <property name="text">
-         <string/>
+         <string>定位方式</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLabel" name="label_positioning_method_display">
+        <property name="font">
+         <font>
+          <family>宋体</family>
+          <pointsize>12</pointsize>
+         </font>
+        </property>
+        <property name="text">
+         <string>未见小车</string>
         </property>
        </widget>
       </item>
@@ -501,74 +530,58 @@
      <layout class="QFormLayout" name="formLayout_2"/>
     </widget>
    </widget>
-   <widget class="QFrame" name="frame_2">
+   <widget class="QWidget" name="">
     <property name="geometry">
      <rect>
-      <x>920</x>
+      <x>950</x>
       <y>10</y>
-      <width>371</width>
-      <height>621</height>
+      <width>341</width>
+      <height>611</height>
      </rect>
     </property>
-    <property name="frameShape">
-     <enum>QFrame::StyledPanel</enum>
-    </property>
-    <property name="frameShadow">
-     <enum>QFrame::Raised</enum>
-    </property>
-    <widget class="QTextEdit" name="log_panel">
-     <property name="geometry">
-      <rect>
-       <x>0</x>
-       <y>0</y>
-       <width>371</width>
-       <height>591</height>
-      </rect>
-     </property>
-     <property name="font">
-      <font>
-       <family>新宋体</family>
-       <pointsize>10</pointsize>
-      </font>
-     </property>
-     <property name="cursor" stdset="0">
-      <cursorShape>IBeamCursor</cursorShape>
-     </property>
-     <property name="readOnly">
-      <bool>true</bool>
-     </property>
-     <property name="textInteractionFlags">
-      <set>Qt::TextSelectableByKeyboard|Qt::TextSelectableByMouse</set>
-     </property>
-     <property name="placeholderText">
-      <string>日志栏</string>
-     </property>
-    </widget>
-    <widget class="QCheckBox" name="auto_scroll">
-     <property name="geometry">
-      <rect>
-       <x>0</x>
-       <y>600</y>
-       <width>361</width>
-       <height>16</height>
-      </rect>
-     </property>
-     <property name="font">
-      <font>
-       <family>新宋体</family>
-       <pointsize>9</pointsize>
-      </font>
-     </property>
-     <property name="text">
-      <string>自动滚屏</string>
-     </property>
-     <property name="checked">
-      <bool>true</bool>
-     </property>
-     <property name="tristate">
-      <bool>false</bool>
-     </property>
-    </widget>
+    <layout class="QVBoxLayout" name="log_panel_frame">
+     <item>
+      <widget class="QTextEdit" name="log_panel">
+       <property name="font">
+        <font>
+         <family>新宋体</family>
+         <pointsize>10</pointsize>
+        </font>
+       </property>
+       <property name="cursor" stdset="0">
+        <cursorShape>IBeamCursor</cursorShape>
+       </property>
+       <property name="readOnly">
+        <bool>true</bool>
+       </property>
+       <property name="textInteractionFlags">
+        <set>Qt::TextSelectableByKeyboard|Qt::TextSelectableByMouse</set>
+       </property>
+       <property name="placeholderText">
+        <string>日志栏</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QCheckBox" name="auto_scroll">
+       <property name="font">
+        <font>
+         <family>新宋体</family>
+         <pointsize>9</pointsize>
+        </font>
+       </property>
+       <property name="text">
+        <string>自动滚屏</string>
+       </property>
+       <property name="checked">
+        <bool>true</bool>
+       </property>
+       <property name="tristate">
+        <bool>false</bool>
+       </property>
+      </widget>
+     </item>
+    </layout>
    </widget>
   </widget>
   <widget class="QMenuBar" name="menubar">
@@ -576,7 +589,7 @@
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>1301</width>
+     <width>1299</width>
      <height>23</height>
     </rect>
    </property>
