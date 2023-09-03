@@ -21,9 +21,11 @@ from multiprocessing.synchronize import Condition
 # 从自己写的包中import
 if __name__ == '__main__':
     import utils
+    import constants as CC
     from utils import Point, Realtime_camera
 else:
     from . import utils
+    from . import constants as CC # camera_constants
     from .utils import Point, Realtime_camera
 
 # 类型注释系列import
@@ -34,28 +36,6 @@ if __name__ == '__main__':
     from utils import Shaped_array, Shaped_NDArray
 else:
     from .utils import Shaped_array, Shaped_NDArray
-
-DEBUG: bool = True
-
-TARGET_UPDATE_PERIOD: float = 0.3
-RAW_IMAGE_SHAPE: Tuple[int, int] = (1280, 720)
-
-TAG_SIZE: float = 0.12
-CAMERA_PARAMS: Tuple[float, float, float, float] = (974.27198357, 976.89535927, 621.55607339, 365.47265865)
-CAMERA_MATRIX: NDArray[np.float64] = np.array([[CAMERA_PARAMS[0], 0, CAMERA_PARAMS[2]], [0, CAMERA_PARAMS[1], CAMERA_PARAMS[3]], [0, 0, 1]])
-DISTORTION_COEFFICIENTS: List[float] = [0.1319229, -0.28063953, 0.00082234, -0.00546549, 0.1388977]
-
-FIELD_SIZE: Tuple[float, float] = (0.3, 0.3)
-TRANSFORMED_WIDTH: int = 700
-TRANSFORMED_HEIGHT: int = round(TRANSFORMED_WIDTH * FIELD_SIZE[1] / FIELD_SIZE[0]) # 保证变换后的图片与真实长度是成比例的
-GAUSS_BLUR_KSIZE: int = 3
-
-BLOCK_HSV_LOWERBOUND: Tuple[int, int, int] = (17, 96, 128)
-BLOCK_HSV_UPPERBOUND: Tuple[int, int ,int] = (33, 255, 255)
-BLOCK_SIZE_THRESH: int = 30
-BLOCK_DISPLAY_COLOR: Tuple[int, int ,int] = (0, 255, 0)
-
-SELECT_CORNER_LINE_COLOR: Tuple[int, int, int] = (0, 196, 0)
 
 class Item:
     """刻画场地中的一个物品"""
@@ -71,7 +51,7 @@ class Item:
     @property
     def real_coord(self) -> Point:
         """物品在场地坐标系下真实坐标"""
-        return Point(self.pixel_pos.x, TRANSFORMED_HEIGHT - self.pixel_pos.y) * (FIELD_SIZE[0] / TRANSFORMED_WIDTH)
+        return Point(self.pixel_pos.x, CC.TRANSFORMED_HEIGHT - self.pixel_pos.y) * (CC.FIELD_SIZE[0] / CC.TRANSFORMED_WIDTH)
 
 class Camera_message:
     """场外相机类回传的消息"""
@@ -84,14 +64,17 @@ class Camera_message:
 
     car_pose: Tuple[Point, float]
     """小车位姿, 表示为(真实坐标, 指向角)"""
+    car_last_update: float
+    """最后一次看见小车的时间, 采用time.monotonic()"""
 
     rendered_picture: NDArray[np.uint8]
     """叠加显示了各元素的图像"""
 
-    def __init__(self, _item_list: List[Item], _car_pose: Tuple[Point, float], _rendered_picture: NDArray[np.uint8]) -> None:
+    def __init__(self, _item_list: List[Item], _car_pose: Tuple[Point, float], _rendered_picture: NDArray[np.uint8], last_update: float) -> None:
         self.timestamp = time.monotonic()
         self.item_list = _item_list
         self.car_pose = _car_pose
+        self.car_last_update = last_update
         self.rendered_picture = _rendered_picture
 
 class Camera:
@@ -113,6 +96,8 @@ class Camera:
     """场地上的物品列表"""
     car_pose: Tuple[Point, float]
     """小车位姿, 表示为(真实坐标, 指向角)"""
+    car_last_update: float
+    """最后一次看见小车的时间, 采用time.monotonic()"""
 
     image_rgb: NDArray
     """当前最新的图片, 已去畸变"""
@@ -135,14 +120,14 @@ class Camera:
 
         原则上讲, Camera类有以下三种使用方法:
 
-        * 在主线程中直接运行: 初始化后调用`main_loop`
+        * 在主线程中直接运行: 初始化后调用`main_loop`, 此时建议设置`show_render`为`True`以观察结果
         * 在子线程中运行: 先在主线程中初始化, 随后在子线程中调用`main_loop`, 此时可以利用`cond`进行同步
         * 作为独立进程运行: 直接在子进程中初始化并启动主循环, 此时可以从`queue`中接收消息并利用`cond`进行同步
 
         Args:
-            cond (multiprocessing.Condition, optional): 同步变量, 若传入则会在每次主循环完成时被notify.
-            queue (multiprocessing.Queue[Camera_message], optional): 消息队列, 若传入则会在每次主循环完成时收到回传的`Camera_message`.
-            show_render (bool, optional): 是否弹出独立的窗口显示叠加了各元素的图像, 默认为否
+            `cond` (multiprocessing.Condition, optional): 同步变量, 若传入则会在每次主循环完成时被notify.
+            `queue` (multiprocessing.Queue[Camera_message], optional): 消息队列, 若传入则会在每次主循环完成时收到回传的`Camera_message`.
+            `show_render` (bool, optional): 是否弹出独立的窗口显示叠加了各元素的图像, 默认为否
         """
         np.set_printoptions(4, suppress=True)
 
@@ -150,13 +135,14 @@ class Camera:
         self.running = True
         self.item_list = []
         self.car_pose = (Point(-1, -1), -9)
+        self.car_last_update = -1
         self.render_condition = cond
         self.message_queue = queue
         self.show_render = show_render
 
         # 初始化相机
         self.camera = Realtime_camera(cv2.VideoCapture('https://192.168.137.186:8080/video'), "Camera-Frame_retriever")
-        assert RAW_IMAGE_SHAPE == (self.camera.capture.get(cv2.CAP_PROP_FRAME_WIDTH), self.camera.capture.get(cv2.CAP_PROP_FRAME_HEIGHT)), "分辨率校验未通过"
+        assert CC.RAW_IMAGE_SHAPE == (self.camera.capture.get(cv2.CAP_PROP_FRAME_WIDTH), self.camera.capture.get(cv2.CAP_PROP_FRAME_HEIGHT)), "分辨率校验未通过"
         self.refresh_image(True)
         self.refresh_image(True) # 初始化时第一帧是无效的, 故取两帧
 
@@ -170,11 +156,12 @@ class Camera:
 
         # 生成变换矩阵
         assert len(corner_list) == 4
-        self.transform_to_top, _unused = cv2.findHomography(np.array(corner_list), np.array([(0, TRANSFORMED_HEIGHT), (TRANSFORMED_WIDTH, TRANSFORMED_HEIGHT), (TRANSFORMED_WIDTH, 0), (0, 0)]))
+        self.transform_to_top = cv2.getPerspectiveTransform(np.array(corner_list, dtype=np.float32),
+                                            np.array([(0, CC.TRANSFORMED_HEIGHT), (CC.TRANSFORMED_WIDTH, CC.TRANSFORMED_HEIGHT), (CC.TRANSFORMED_WIDTH, 0), (0, 0)], dtype=np.float32))
 
         # 根据相机内参求解相机外参
-        succ, rvec, tvec = cv2.solvePnP(objectPoints=np.array([(0, 0, 0), (FIELD_SIZE[0], 0, 0), (*FIELD_SIZE, 0), (0, FIELD_SIZE[1], 0)]),
-                                        imagePoints=np.array(corner_list, dtype=np.float64), cameraMatrix=CAMERA_MATRIX, distCoeffs=None)
+        succ, rvec, tvec = cv2.solvePnP(objectPoints=np.array([(0, 0, 0), (CC.FIELD_SIZE[0], 0, 0), (*CC.FIELD_SIZE, 0), (0, CC.FIELD_SIZE[1], 0)]),
+                                        imagePoints=np.array(corner_list, dtype=np.float64), cameraMatrix=CC.CAMERA_MATRIX, distCoeffs=None)
         assert succ, "相机外参求解失败"
         self.camera_pose = np.linalg.inv(utils.construct_pose_cv2(rvec, tvec))
 
@@ -195,9 +182,9 @@ class Camera:
 
             # 绘制图示
             if len(corner_list) > 1:
-                cv2.line(image_copy, (x, y), corner_list[-2], SELECT_CORNER_LINE_COLOR, 2, cv2.LINE_AA)
+                cv2.line(image_copy, (x, y), corner_list[-2], CC.SELECT_CORNER_LINE_COLOR, 2, cv2.LINE_AA)
             if len(corner_list) == 4:
-                cv2.line(image_copy, (x, y), corner_list[0], SELECT_CORNER_LINE_COLOR, 2, cv2.LINE_AA)
+                cv2.line(image_copy, (x, y), corner_list[0], CC.SELECT_CORNER_LINE_COLOR, 2, cv2.LINE_AA)
             cv2.drawMarker(image_copy, (x, y), (0, 255, 0), cv2.MARKER_CROSS, 15, 1)
             cv2.imshow("select_corner", image_copy)
 
@@ -205,11 +192,11 @@ class Camera:
         """对一个或一系列坐标施加变换
 
         Args:
-            input_points (Arraylike): 将要变换的坐标, 可以是一维数组或二维数组
-            round (bool, optional): 是否对结果取整, 默认为否.
+            `input_points` (Arraylike): 将要变换的坐标, 可以是一维数组或二维数组
+            `round` (bool, optional): 是否对结果取整, 默认为否.
 
         Returns:
-            NDArray: 经过变换的坐标, 原则上与input_points的shape一致
+            `NDArray`: 经过变换的坐标, 原则上与input_points的shape一致
         """
         input_points = np.array(input_points)
         one_dim: bool = len(input_points.shape) == 1
@@ -238,13 +225,14 @@ class Camera:
                 break
             time.sleep(0.1)
 
+        # 图片去畸变
+        self.image_rgb = cv2.undistort(self.image_rgb, CC.CAMERA_MATRIX, np.array(CC.DISTORTION_COEFFICIENTS))
+        self.image_gray = cv2.cvtColor(self.image_rgb, cv2.COLOR_BGR2GRAY)
         if init:
             return
 
         # 进行图片变换
-        self.image_rgb = cv2.undistort(self.image_rgb, CAMERA_MATRIX, np.array(DISTORTION_COEFFICIENTS))
-        self.image_gray = cv2.cvtColor(self.image_rgb, cv2.COLOR_BGR2GRAY)
-        self.transformed_rgb = cv2.warpPerspective(self.image_rgb, self.transform_to_top, dsize=(TRANSFORMED_WIDTH, TRANSFORMED_HEIGHT))
+        self.transformed_rgb = cv2.warpPerspective(self.image_rgb, self.transform_to_top, dsize=(CC.TRANSFORMED_WIDTH, CC.TRANSFORMED_HEIGHT))
 
     def __refresh_items(self):
         """更新物品位置"""
@@ -279,14 +267,14 @@ class Camera:
         ret: List[Item] = []
 
         # 模糊后进行颜色筛选
-        blurred = cv2.cvtColor(cv2.GaussianBlur(self.image_rgb, (GAUSS_BLUR_KSIZE, GAUSS_BLUR_KSIZE), GAUSS_BLUR_KSIZE/3), cv2.COLOR_BGR2HSV)
-        block_mask = cv2.inRange(blurred, BLOCK_HSV_LOWERBOUND, BLOCK_HSV_UPPERBOUND) # type: ignore
+        blurred = cv2.cvtColor(cv2.GaussianBlur(self.image_rgb, (CC.GAUSS_BLUR_KSIZE, CC.GAUSS_BLUR_KSIZE), CC.GAUSS_BLUR_KSIZE/3), cv2.COLOR_BGR2HSV)
+        block_mask = cv2.inRange(blurred, CC.BLOCK_HSV_LOWERBOUND, CC.BLOCK_HSV_UPPERBOUND) # type: ignore
 
         # 分离轮廓
         raw_contours, _unused = cv2.findContours(block_mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
         for ind, contour in enumerate(raw_contours):
-            if cv2.contourArea(contour) < BLOCK_SIZE_THRESH:
+            if cv2.contourArea(contour) < CC.BLOCK_SIZE_THRESH:
                 continue
 
             # 取最靠屏幕下方的像素位置
@@ -300,14 +288,14 @@ class Camera:
             cv2.circle(self.transformed_rgb, transformed_position, 5, (0, 255, 0), -1)
 
             # 生成列表
-            if Point(*transformed_position).in_range((0, TRANSFORMED_WIDTH), (0, TRANSFORMED_HEIGHT)):
+            if Point(*transformed_position).in_range((0, CC.TRANSFORMED_WIDTH), (0, CC.TRANSFORMED_HEIGHT)):
                 ret.append(Item(Point(*transformed_position), -1))
 
         return ret
 
     def __estimate_car_pose(self) -> None:
         """根据图片更新小车位姿"""
-        dets = self.tag_detector.detect(self.image_gray, True, CAMERA_PARAMS, TAG_SIZE)
+        dets = self.tag_detector.detect(self.image_gray, True, CC.CAMERA_PARAMS, CC.TAG_SIZE)
 
         tag_found: bool = False
         for det in dets:
@@ -321,6 +309,7 @@ class Camera:
 
             # 提取平面的小车位姿
             weird_axes: bool = abs(tag_pose[2, 2]) < abs(tag_pose[1, 2]) # 假如旋转矩阵的三个轴排列方式比较奇怪
+            self.car_last_update = time.monotonic()
             self.car_pose = (Point(*utils.pose_translation(tag_pose)[:2]), math.atan2(tag_pose[2, 0] if weird_axes else tag_pose[1, 0], tag_pose[0, 0]))
             if weird_axes:
                 print(weird_axes, self.car_pose[1])
@@ -336,22 +325,23 @@ class Camera:
 
             # 绘制物品坐标
             self.rendered_picture = np.copy(self.transformed_rgb)
-            scale_factor: float = FIELD_SIZE[0] / TRANSFORMED_WIDTH
+            scale_factor: float = CC.FIELD_SIZE[0] / CC.TRANSFORMED_WIDTH
             for item in self.item_list:
-                cv2.circle(self.rendered_picture, round(item.pixel_pos), 4, BLOCK_DISPLAY_COLOR, -1)
+                cv2.circle(self.rendered_picture, round(item.pixel_pos), 4, CC.BLOCK_DISPLAY_COLOR, -1)
                 out_str = "%d (%.2f, %.2f)" % (item.index, *item.real_coord)
-                cv2.putText(self.rendered_picture, out_str, round(item.pixel_pos), cv2.FONT_HERSHEY_COMPLEX, 0.5, BLOCK_DISPLAY_COLOR)
+                cv2.putText(self.rendered_picture, out_str, round(item.pixel_pos), cv2.FONT_HERSHEY_COMPLEX, 0.5, CC.BLOCK_DISPLAY_COLOR)
 
             # 绘制小车位置与方向
             if hasattr(self, "car_pose"):
                 car_pixel_pos = self.car_pose[0] / scale_factor
-                car_pixel_pos.y = TRANSFORMED_HEIGHT - car_pixel_pos.y
-                cv2.circle(self.rendered_picture, round(car_pixel_pos), 6, (0, 255, 0), -1)
-                cv2.arrowedLine(self.rendered_picture, round(car_pixel_pos), round(car_pixel_pos + Point(math.cos(self.car_pose[1]), -math.sin(self.car_pose[1])) * 50), (0, 255, 0), 2, tipLength=0.2)
+                car_pixel_pos.y = CC.TRANSFORMED_HEIGHT - car_pixel_pos.y
+                cv2.circle(self.rendered_picture, round(car_pixel_pos), 6, CC.CAR_DISPLAY_COLOR, -1)
+                cv2.arrowedLine(self.rendered_picture, round(car_pixel_pos),
+                                round(car_pixel_pos + Point(math.cos(self.car_pose[1]), -math.sin(self.car_pose[1])) * 50), CC.CAR_DISPLAY_COLOR, 2, tipLength=0.2)
 
             # 回传消息
             if isinstance(self.message_queue, Queue):
-                self.message_queue.put(Camera_message(self.item_list, self.car_pose, self.rendered_picture))
+                self.message_queue.put(Camera_message(self.item_list, self.car_pose, self.rendered_picture, self.car_last_update))
 
             # 叠加显示完毕, 通知其它处理程序
             if isinstance(self.render_condition, (threading.Condition, Condition)):
@@ -361,14 +351,15 @@ class Camera:
             # 如有需要, 直接显示图像
             if self.show_render:
                 cv2.imshow("field", self.rendered_picture)
+                cv2.imshow("whole", self.image_rgb)
                 cv2.waitKey(1)
 
             # 休眠一段时间
             loop_time = time.monotonic() - loop_start
-            if loop_time < TARGET_UPDATE_PERIOD:
-                time.sleep(TARGET_UPDATE_PERIOD - loop_time)
+            if loop_time < CC.TARGET_UPDATE_PERIOD:
+                time.sleep(CC.TARGET_UPDATE_PERIOD - loop_time)
             print("Main Loop: %.3f" % (time.monotonic() - loop_start))
 
 if __name__ == "__main__":
-    cam = Camera()
+    cam = Camera(show_render=True)
     cam.main_loop()
