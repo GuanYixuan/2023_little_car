@@ -4,27 +4,40 @@
 * 物品定位
 * 小车定位
 * 获取目标区域状态
-
 """
-import os
-os.chdir(os.path.dirname(__file__))
+import os, sys
+if __name__ == '__main__':
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__))))
 
 import cv2
 import time
 import math
+import threading
 import numpy as np
 import pupil_apriltags
-import matplotlib.pyplot as plt
+from multiprocessing.queues import Queue
+from multiprocessing.synchronize import Condition
 
-import utils
-from utils import Point, Realtime_camera
+# 从自己写的包中import
+if __name__ == '__main__':
+    import utils
+    from utils import Point, Realtime_camera
+else:
+    from . import utils
+    from .utils import Point, Realtime_camera
 
-from typing import Literal, List, Tuple
+# 类型注释系列import
 from numpy.typing import NDArray
-from utils import Shaped_array, Shaped_NDArray
+from typing import List, Tuple
+from typing import Literal, Optional, Union
+if __name__ == '__main__':
+    from utils import Shaped_array, Shaped_NDArray
+else:
+    from .utils import Shaped_array, Shaped_NDArray
 
 DEBUG: bool = True
 
+TARGET_UPDATE_PERIOD: float = 0.3
 RAW_IMAGE_SHAPE: Tuple[int, int] = (1280, 720)
 
 TAG_SIZE: float = 0.12
@@ -32,7 +45,7 @@ CAMERA_PARAMS: Tuple[float, float, float, float] = (974.27198357, 976.89535927, 
 CAMERA_MATRIX: NDArray[np.float64] = np.array([[CAMERA_PARAMS[0], 0, CAMERA_PARAMS[2]], [0, CAMERA_PARAMS[1], CAMERA_PARAMS[3]], [0, 0, 1]])
 DISTORTION_COEFFICIENTS: List[float] = [0.1319229, -0.28063953, 0.00082234, -0.00546549, 0.1388977]
 
-FIELD_SIZE: Tuple[float, float] = (1.6, 1.6)
+FIELD_SIZE: Tuple[float, float] = (0.3, 0.3)
 TRANSFORMED_WIDTH: int = 700
 TRANSFORMED_HEIGHT: int = round(TRANSFORMED_WIDTH * FIELD_SIZE[1] / FIELD_SIZE[0]) # 保证变换后的图片与真实长度是成比例的
 GAUSS_BLUR_KSIZE: int = 3
@@ -60,13 +73,44 @@ class Item:
         """物品在场地坐标系下真实坐标"""
         return Point(self.pixel_pos.x, TRANSFORMED_HEIGHT - self.pixel_pos.y) * (FIELD_SIZE[0] / TRANSFORMED_WIDTH)
 
+class Camera_message:
+    """场外相机类回传的消息"""
+
+    timestamp: float
+    """消息生成的时间戳"""
+
+    item_list: List[Item]
+    """场地上的物品列表"""
+
+    car_pose: Tuple[Point, float]
+    """小车位姿, 表示为(真实坐标, 指向角)"""
+
+    rendered_picture: NDArray[np.uint8]
+    """叠加显示了各元素的图像"""
+
+    def __init__(self, _item_list: List[Item], _car_pose: Tuple[Point, float], _rendered_picture: NDArray[np.uint8]) -> None:
+        self.timestamp = time.monotonic()
+        self.item_list = _item_list
+        self.car_pose = _car_pose
+        self.rendered_picture = _rendered_picture
+
 class Camera:
-    """定位导航主类"""
+    """场外相机主类"""
+
+    running: bool
 
     camera: Realtime_camera
+    tag_detector: pupil_apriltags.Detector
+    """探测Apriltag的detector"""
 
     camera_pose: Shaped_NDArray[Literal["(4,4)"], np.float64]
     """相机位姿"""
+    transform_to_top: NDArray[np.float64]
+    """将原始图像变换至俯视的变换矩阵"""
+
+    item_index_counter: int = 1
+    item_list: List[Item]
+    """场地上的物品列表"""
     car_pose: Tuple[Point, float]
     """小车位姿, 表示为(真实坐标, 指向角)"""
 
@@ -76,26 +120,42 @@ class Camera:
     """灰度化后的最新图片, 已去畸变"""
     transformed_rgb: NDArray
     """变换后的最新图片, 已去畸变"""
+    rendered_picture: NDArray[np.uint8]
+    """叠加显示了各元素的图像"""
 
-    transform_to_top: NDArray[np.float64]
-    """将原始图像变换至俯视的变换矩阵"""
+    render_condition: Union[threading.Condition, Condition, None]
+    """用于通知其它线程/进程的同步变量"""
+    message_queue: Optional[Queue]
+    """在相机作为独立进程运行时用于传递数据"""
 
-    tag_detector: pupil_apriltags.Detector
-    """探测Apriltag的detector"""
+    show_render: bool
 
-    item_index_counter: int = 1
-    item_list: List[Item]
-    """场地上的物品列表"""
+    def __init__(self, *, cond: Optional[Condition] = None, queue: Optional[Queue] = None, show_render: bool = False) -> None:
+        """初始化定位系统, 此过程需要手动标记场地的四个角点
 
-    def __init__(self) -> None:
-        """初始化定位系统, 此过程需要手动标记场地的四个角点"""
+        原则上讲, Camera类有以下三种使用方法:
+
+        * 在主线程中直接运行: 初始化后调用`main_loop`
+        * 在子线程中运行: 先在主线程中初始化, 随后在子线程中调用`main_loop`, 此时可以利用`cond`进行同步
+        * 作为独立进程运行: 直接在子进程中初始化并启动主循环, 此时可以从`queue`中接收消息并利用`cond`进行同步
+
+        Args:
+            cond (multiprocessing.Condition, optional): 同步变量, 若传入则会在每次主循环完成时被notify.
+            queue (multiprocessing.Queue[Camera_message], optional): 消息队列, 若传入则会在每次主循环完成时收到回传的`Camera_message`.
+            show_render (bool, optional): 是否弹出独立的窗口显示叠加了各元素的图像, 默认为否
+        """
         np.set_printoptions(4, suppress=True)
 
         # 初始化各属性
+        self.running = True
         self.item_list = []
+        self.car_pose = (Point(-1, -1), -9)
+        self.render_condition = cond
+        self.message_queue = queue
+        self.show_render = show_render
 
         # 初始化相机
-        self.camera = Realtime_camera(cv2.VideoCapture('https://192.168.137.186:8080/video'))
+        self.camera = Realtime_camera(cv2.VideoCapture('https://192.168.137.186:8080/video'), "Camera-Frame_retriever")
         assert RAW_IMAGE_SHAPE == (self.camera.capture.get(cv2.CAP_PROP_FRAME_WIDTH), self.camera.capture.get(cv2.CAP_PROP_FRAME_HEIGHT)), "分辨率校验未通过"
         self.refresh_image(True)
         self.refresh_image(True) # 初始化时第一帧是无效的, 故取两帧
@@ -109,7 +169,6 @@ class Camera:
         cv2.waitKey(-1)
 
         # 生成变换矩阵
-        corner_list = [(230, 480), (1062, 472), (880, 123), (389, 127)]
         assert len(corner_list) == 4
         self.transform_to_top, _unused = cv2.findHomography(np.array(corner_list), np.array([(0, TRANSFORMED_HEIGHT), (TRANSFORMED_WIDTH, TRANSFORMED_HEIGHT), (TRANSFORMED_WIDTH, 0), (0, 0)]))
 
@@ -121,32 +180,6 @@ class Camera:
 
         # 初始化tag_detector
         self.tag_detector = pupil_apriltags.Detector(nthreads=4, quad_decimate=1.0)
-
-        # 尚未成型的主循环
-        while True:
-            self.refresh_image()
-            self.refresh_items()
-            self.estimate_car_pose()
-
-            # 绘制物品坐标
-            temp_output: NDArray[np.uint8] = np.copy(self.transformed_rgb)
-            scale_factor: float = FIELD_SIZE[0] / TRANSFORMED_WIDTH
-            for item in self.item_list:
-                cv2.circle(temp_output, round(item.pixel_pos), 4, BLOCK_DISPLAY_COLOR, -1)
-                out_str = "%d (%.2f, %.2f)" % (item.index, *item.real_coord)
-                cv2.putText(temp_output, out_str, round(item.pixel_pos), cv2.FONT_HERSHEY_COMPLEX, 0.5, BLOCK_DISPLAY_COLOR)
-
-            # 绘制小车位置与方向
-            if hasattr(self, "car_pose"):
-                car_pixel_pos = self.car_pose[0] / scale_factor
-                car_pixel_pos.y = TRANSFORMED_HEIGHT - car_pixel_pos.y
-                cv2.circle(temp_output, round(car_pixel_pos), 6, (0, 255, 0), -1)
-                cv2.arrowedLine(temp_output, round(car_pixel_pos), round(car_pixel_pos + Point(math.cos(self.car_pose[1]), -math.sin(self.car_pose[1])) * 50), (0, 255, 0), 2, tipLength=0.2)
-
-            cv2.imshow("a", temp_output)
-            cv2.waitKey(1)
-
-            time.sleep(0.1)
 
     def __del__(self) -> None:
         del self.camera
@@ -213,7 +246,7 @@ class Camera:
         self.image_gray = cv2.cvtColor(self.image_rgb, cv2.COLOR_BGR2GRAY)
         self.transformed_rgb = cv2.warpPerspective(self.image_rgb, self.transform_to_top, dsize=(TRANSFORMED_WIDTH, TRANSFORMED_HEIGHT))
 
-    def refresh_items(self):
+    def __refresh_items(self):
         """更新物品位置"""
         new_list = self.__find_items()
         merged_list: List[Item] = []
@@ -272,7 +305,7 @@ class Camera:
 
         return ret
 
-    def estimate_car_pose(self) -> None:
+    def __estimate_car_pose(self) -> None:
         """根据图片更新小车位姿"""
         dets = self.tag_detector.detect(self.image_gray, True, CAMERA_PARAMS, TAG_SIZE)
 
@@ -289,12 +322,53 @@ class Camera:
             # 提取平面的小车位姿
             weird_axes: bool = abs(tag_pose[2, 2]) < abs(tag_pose[1, 2]) # 假如旋转矩阵的三个轴排列方式比较奇怪
             self.car_pose = (Point(*utils.pose_translation(tag_pose)[:2]), math.atan2(tag_pose[2, 0] if weird_axes else tag_pose[1, 0], tag_pose[0, 0]))
-            print(weird_axes, self.car_pose[1])
-            print(utils.pose_rotation(tag_pose))
-            cv2.circle(self.image_rgb, np.round(det.center).astype(np.int32), 10, (0, 255, 0), 2)
+            if weird_axes:
+                print(weird_axes, self.car_pose[1])
 
-        cv2.imshow("w", self.image_rgb)
-        cv2.waitKey(1)
+    def main_loop(self) -> None:
+        """场外相机主循环"""
+        while self.running:
+            loop_start = time.monotonic()
+
+            self.refresh_image()
+            self.__refresh_items()
+            self.__estimate_car_pose()
+
+            # 绘制物品坐标
+            self.rendered_picture = np.copy(self.transformed_rgb)
+            scale_factor: float = FIELD_SIZE[0] / TRANSFORMED_WIDTH
+            for item in self.item_list:
+                cv2.circle(self.rendered_picture, round(item.pixel_pos), 4, BLOCK_DISPLAY_COLOR, -1)
+                out_str = "%d (%.2f, %.2f)" % (item.index, *item.real_coord)
+                cv2.putText(self.rendered_picture, out_str, round(item.pixel_pos), cv2.FONT_HERSHEY_COMPLEX, 0.5, BLOCK_DISPLAY_COLOR)
+
+            # 绘制小车位置与方向
+            if hasattr(self, "car_pose"):
+                car_pixel_pos = self.car_pose[0] / scale_factor
+                car_pixel_pos.y = TRANSFORMED_HEIGHT - car_pixel_pos.y
+                cv2.circle(self.rendered_picture, round(car_pixel_pos), 6, (0, 255, 0), -1)
+                cv2.arrowedLine(self.rendered_picture, round(car_pixel_pos), round(car_pixel_pos + Point(math.cos(self.car_pose[1]), -math.sin(self.car_pose[1])) * 50), (0, 255, 0), 2, tipLength=0.2)
+
+            # 回传消息
+            if isinstance(self.message_queue, Queue):
+                self.message_queue.put(Camera_message(self.item_list, self.car_pose, self.rendered_picture))
+
+            # 叠加显示完毕, 通知其它处理程序
+            if isinstance(self.render_condition, (threading.Condition, Condition)):
+                with self.render_condition:
+                    self.render_condition.notify_all()
+
+            # 如有需要, 直接显示图像
+            if self.show_render:
+                cv2.imshow("field", self.rendered_picture)
+                cv2.waitKey(1)
+
+            # 休眠一段时间
+            loop_time = time.monotonic() - loop_start
+            if loop_time < TARGET_UPDATE_PERIOD:
+                time.sleep(TARGET_UPDATE_PERIOD - loop_time)
+            print("Main Loop: %.3f" % (time.monotonic() - loop_start))
 
 if __name__ == "__main__":
-    Camera()
+    cam = Camera()
+    cam.main_loop()
