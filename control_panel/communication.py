@@ -3,11 +3,16 @@
 import time
 import serial
 import threading
+from multiprocessing.queues import Queue
 
 from typing import List
 
 STM32_INSTRUCTION_LENGTH: int = 8
 PING_ECHO_CONTENT: str = "PINECO\n"
+GRAB_SUCCESS_CONTENT: str = "GRSUCC"
+GRAB_FAILED_CONTENT: str = "GRFAIL"
+PLACE_SUCCESS_CONTENT: str = "PLSUCC"
+PLACE_FAILED_CONTENT: str = "PLFAIL"
 
 class Serial_handler:
     """用于PC-STM32交互的串口对象"""
@@ -20,7 +25,7 @@ class Serial_handler:
     instruction_queue: List[bytes]
     """等待发出的指令"""
     message_queue: List[bytes]
-    """从STM32收到的信息, 以'\\n'结尾"""
+    """从STM32收到的信息, 结尾的'\\n'已经去除"""
 
     feeder_thread: threading.Thread
     """指令发送线程"""
@@ -32,10 +37,14 @@ class Serial_handler:
     recv_cond: threading.Condition
     """用于接收信息的同步变量"""
 
+    extra_queues: List[Queue]
+    """附加的消息队列, 每收到一条消息都会向其中的所有队列抄送一份"""
+
     def __init__(self, serial_name: str, baudrate: int) -> None:
         # 属性初始化
         self.running = True
         self.message_queue = []
+        self.extra_queues = []
         self.instruction_queue = []
         self.serial_instance = serial.Serial(serial_name, baudrate)
         self.serial_instance.timeout = 0.1
@@ -144,6 +153,8 @@ class Serial_handler:
             # 将消息加入队列
             if need_append:
                 self.message_queue.append(new_message)
+                for queue in self.extra_queues:
+                    queue.put(new_message)
 
                 # 通知各个正在等待的线程
                 with self.recv_cond:

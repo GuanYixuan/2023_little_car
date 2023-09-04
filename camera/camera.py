@@ -59,6 +59,10 @@ class Camera_message:
     timestamp: float
     """消息生成的时间戳"""
 
+    home_pos: Point
+    """(己方)目标区域位置"""
+    enemy_home_pos: Point
+    """对方目标区域位置"""
     item_list: List[Item]
     """场地上的物品列表"""
 
@@ -70,12 +74,8 @@ class Camera_message:
     rendered_picture: NDArray[np.uint8]
     """叠加显示了各元素的图像"""
 
-    def __init__(self, _item_list: List[Item], _car_pose: Tuple[Point, float], _rendered_picture: NDArray[np.uint8], last_update: float) -> None:
+    def __init__(self) -> None:
         self.timestamp = time.monotonic()
-        self.item_list = _item_list
-        self.car_pose = _car_pose
-        self.car_last_update = last_update
-        self.rendered_picture = _rendered_picture
 
 class Camera:
     """场外相机主类"""
@@ -155,6 +155,7 @@ class Camera:
         cv2.waitKey(-1)
 
         # 生成变换矩阵
+        corner_list = [(54, 621), (1091, 953), (1193, 59), (305, 135)]
         assert len(corner_list) == 4
         self.transform_to_top = cv2.getPerspectiveTransform(np.array(corner_list, dtype=np.float32),
                                             np.array([(0, CC.TRANSFORMED_HEIGHT), (CC.TRANSFORMED_WIDTH, CC.TRANSFORMED_HEIGHT), (CC.TRANSFORMED_WIDTH, 0), (0, 0)], dtype=np.float32))
@@ -167,7 +168,6 @@ class Camera:
 
         # 初始化tag_detector
         self.tag_detector = pupil_apriltags.Detector(nthreads=4, quad_decimate=1.0)
-
     def __del__(self) -> None:
         del self.camera
 
@@ -261,7 +261,6 @@ class Camera:
                 self.item_index_counter += 1
 
         self.item_list = merged_list
-
     def __find_items(self) -> List[Item]:
         """识别场上的物品并计算其坐标"""
         ret: List[Item] = []
@@ -341,7 +340,13 @@ class Camera:
 
             # 回传消息
             if isinstance(self.message_queue, Queue):
-                self.message_queue.put(Camera_message(self.item_list, self.car_pose, self.rendered_picture, self.car_last_update))
+                msg = Camera_message()
+                msg.home_pos = Point(0, 0)
+                msg.item_list = self.item_list
+                msg.car_pose = self.car_pose
+                msg.car_last_update = self.car_last_update
+                msg.rendered_picture = self.rendered_picture
+                self.message_queue.put(msg)
 
             # 叠加显示完毕, 通知其它处理程序
             if isinstance(self.render_condition, (threading.Condition, Condition)):
@@ -352,7 +357,14 @@ class Camera:
             if self.show_render:
                 cv2.imshow("field", self.rendered_picture)
                 cv2.imshow("whole", self.image_rgb)
-                cv2.waitKey(1)
+                # 附加一个截图功能和退出功能
+                key = (cv2.waitKey(1) & 0xFF)
+                if key == ord('c'):
+                    cv2.imwrite("captures/%s.jpg" % time.strftime("%m_%d_%H_%M_%S"), self.image_rgb)
+                elif key == ord('q'):
+                    cv2.destroyAllWindows()
+                    self.running = False
+                    del self.camera
 
             # 休眠一段时间
             loop_time = time.monotonic() - loop_start
@@ -363,3 +375,4 @@ class Camera:
 if __name__ == "__main__":
     cam = Camera(show_render=True)
     cam.main_loop()
+    sys.exit(0)

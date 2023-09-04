@@ -6,7 +6,7 @@ import threading
 import numpy as np
 
 from typing import Iterable, Optional, Tuple, Any
-from typing import TYPE_CHECKING, TypeVar, Literal, Protocol
+from typing import TYPE_CHECKING, TypeVar, Literal, Protocol, overload
 from numpy import dtype
 from numpy.typing import NDArray
 
@@ -48,9 +48,16 @@ class Point:
             return Point(self.x - other.x, self.y - other.y)
         elif isinstance(other, (int, float)):
             return Point(self.x - other, self.y - other)
-    def __mul__(self, num: float) -> "Point":
-        assert isinstance(num, (int, float))
-        return Point(self.x * num, self.y * num)
+    @overload
+    def __mul__(self, other: float) -> "Point": ...
+    @overload
+    def __mul__(self, other: "Point") -> float: ...
+    def __mul__(self, other: "Point | float") -> "Point | float":
+        """数乘和向量点乘"""
+        if isinstance(other, Point):
+            return self.x * other.x + self.y * other.y
+        elif isinstance(other, (int, float)):
+            return Point(self.x * other, self.y * other)
     def __truediv__(self, num: float) -> "Point":
         assert isinstance(num, (int, float))
         return Point(self.x / num, self.y / num)
@@ -92,6 +99,31 @@ class Point:
         """计算该从点指向另一点的向量的幅角主值"""
         assert isinstance(other, Point)
         return (other - self).to_rad()
+    @staticmethod
+    def angle_like(angle1: float, angle2: float, thresh: float) -> bool:
+        """判断两个角`angle1`和`angle2`是否在误差范围`thresh`内相等, 所有单位均为弧度"""
+        diff_pi = abs(angle1 - angle2) / math.pi
+        return (diff_pi - int(diff_pi)) * math.pi < thresh
+    @staticmethod
+    def angle_between(angle_from: float, angle_to: float) -> float:
+        """计算从角`angle_from`旋转到`angle_to`需要逆时针转动的弧度"""
+        diff = angle_to - angle_from
+        if abs(diff) < math.pi:
+            return diff
+        if abs(diff + 2*math.pi) < abs(diff - 2*math.pi):
+            return diff + 2*math.pi
+        return diff - 2*math.pi
+    def dist_to_segment(self, A: "Point", B: "Point") -> float:
+        """计算该点到*线段*AB的最小距离"""
+        vec_AB = B - A
+        vec_AC = self - A
+        len_AB = vec_AB.get_length()
+        projection: float = vec_AC * vec_AB / len_AB
+
+        # 若投影在线段上, 返回垂线的长度, 否则看端点
+        if 0 <= projection <= len_AB:
+            return math.sqrt(vec_AC.get_length()**2 - projection**2)
+        return min(self.dist_to_point(A), self.dist_to_point(B))
 
 class Realtime_camera(threading.Thread):
     '''Always getting the most recent frame of a camera

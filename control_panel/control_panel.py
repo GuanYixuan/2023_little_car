@@ -7,6 +7,7 @@ import math
 import time
 import threading
 import numpy as np
+from copy import deepcopy
 import multiprocessing
 from multiprocessing.queues import Queue
 from multiprocessing.synchronize import Condition
@@ -19,11 +20,14 @@ from qtpy.QtGui import QPixmap, QImage, QTextCharFormat, QColor, QTextCursor
 
 # 从自己写的包中import
 from communication import Serial_handler
+from communication import STM32_INSTRUCTION_LENGTH
+from communication import GRAB_SUCCESS_CONTENT, PLACE_SUCCESS_CONTENT
+from camera.utils import Point
 from camera.camera import Camera, Camera_message
 import camera.constants as CC # camera constants
 
 # 类型注释系列import
-from typing import Optional
+from typing import Optional, Literal
 from numpy.typing import NDArray
 
 BAUDRATE: int = 9600
@@ -35,6 +39,8 @@ SHIFT_STEP_LENGTH: int = 30
 COMMAND_COLOR: int = 0x000000
 SUCCESS_COLOR: int = 0x009000
 FAILED_COLOR: int = 0xa00000
+
+ITEM_COLLIDE_THRESH: float = 0.2
 
 def camera_process(cond: Optional[Condition] = None, queue: Optional[Queue] = None) -> None:
     cam = Camera(cond=cond, queue=queue)
@@ -59,6 +65,13 @@ class Control_panel(QMainWindow, Ui_MainWindow):
     camera_listener: threading.Thread
     camera_signal = pyqtSignal(str) # 不知为何必须是class member
 
+    alg_running: bool
+    alg_start_time: float
+    main_algorithm_thread: threading.Thread
+    """主算法线程"""
+
+    __alg_message_queue: "Queue[bytes]"
+
     def __init__(self, *, no_STM: bool = False, no_camera: bool = False) -> None:
         """启动小车控制面板
 
@@ -74,8 +87,10 @@ class Control_panel(QMainWindow, Ui_MainWindow):
         self.no_STM = no_STM
         self.no_camera = no_camera
         self.camera_queue = multiprocessing.Queue()
+        self.__alg_message_queue = multiprocessing.Queue()
         if not no_STM:
             self.stm32_serial = Serial_handler(SERIAL_NAME, BAUDRATE)
+            self.stm32_serial.extra_queues.append(self.__alg_message_queue)
 
         # 初始化各进程/线程
         if not no_camera:
@@ -153,7 +168,10 @@ class Control_panel(QMainWindow, Ui_MainWindow):
         textCursor.insertText("[%s] %s\n" % (time_str, raw), charFormat)
         textCursor.setPosition(old_position)
     def __log_updator(self) -> None:
-        """`log_panel`线程, 接收并添加新信息"""
+        """`log_panel`线程, 接收并添加新信息
+
+        同时承接主算法阻塞式等待消息的功能
+        """
         while self.running:
             if len(self.stm32_serial.message_queue) == 0:
                 with self.stm32_serial.recv_cond:
@@ -196,6 +214,23 @@ class Control_panel(QMainWindow, Ui_MainWindow):
 
             self.label_positioning_method_display.setStyleSheet("color: red;" if time_delta > 5 else "color: black;")
 
+    # 主算法部分
+    def __activate_algorithm(self) -> None:
+        """`启动主算法`按钮"""
+        self.alg_running = True
+        self.main_algorithm_thread = threading.Thread(target=self.__main_algorithm, name="Control_panel-Main_algorithm", daemon=True)
+        self.main_algorithm_thread.start()
+
+        self.activate_algorithm_button.setEnabled(False)
+        self.deactivate_algorithm_button.setEnabled(True)
+        self.label_alg_status_display.setText("运行中")
+    def __deactivate_algorithm(self) -> None:
+        """`关闭主算法`按钮"""
+        self.alg_running = False
+        self.main_algorithm_thread.join()
+        self.activate_algorithm_button.setEnabled(True)
+        self.deactivate_algorithm_button.setEnabled(False)
+
     def __connect_logic(self) -> None:
         # 左侧指令面板
         self.steer_button.clicked.connect(self.__steer_button)
@@ -213,6 +248,12 @@ class Control_panel(QMainWindow, Ui_MainWindow):
 
         if self.no_STM:
             self.command_plate.setEnabled(False)
+        if self.no_camera:
+            self.label_positioning_method_display.setText("相机未启用")
+        if self.no_STM or self.no_camera:
+            self.label_alg_status_display.setText("不可启动")
+            self.activate_algorithm_button.setEnabled(False)
+            self.deactivate_algorithm_button.setEnabled(False)
 
         # log panel
         self.log_panel.verticalScrollBar().rangeChanged.connect(self.__log_scroll_bar)
@@ -220,18 +261,107 @@ class Control_panel(QMainWindow, Ui_MainWindow):
         # camera
         self.camera_signal.connect(self.__update_image_main)
 
-        self.scene = QGraphicsScene()
+        scene = QGraphicsScene()
         self.item = QGraphicsPixmapItem()
-        self.scene.setSceneRect(0, 0, CC.TRANSFORMED_WIDTH, CC.TRANSFORMED_HEIGHT)
-        self.scene.addItem(self.item)
-        self.graphicsView.setScene(self.scene)
-
+        scene.setSceneRect(0, 0, CC.TRANSFORMED_WIDTH, CC.TRANSFORMED_HEIGHT)
+        scene.addItem(self.item)
+        self.graphicsView.setScene(scene)
         self.graphicsView.show()
 
+        # 主算法
+        self.activate_algorithm_button.clicked.connect(self.__activate_algorithm)
+        self.deactivate_algorithm_button.clicked.connect(self.__deactivate_algorithm)
+
+    # 暂且寄生在control panel下的主算法
+    def __main_algorithm(self) -> None:
+        collected_blocks: int = 0
+        while self.alg_running:
+            # 缓存一份, 避免data race
+            self.__log_once("[主算法] 刷新信息", COMMAND_COLOR)
+            camera_message: Camera_message = deepcopy(self.camera_message)
+            car_pos: Point = camera_message.car_pose[0]
+
+            closest_id: int = -1
+            closest_length: float = 1e9
+            for ind, item in enumerate(camera_message.item_list):
+                collide: bool = False
+                for other_ind, other in enumerate(camera_message.item_list):
+                    if ind == other_ind:
+                        continue
+                    d1 = other.real_coord.dist_to_segment(car_pos, item.real_coord) # 小车->物块
+                    d2 = other.real_coord.dist_to_segment(item.real_coord, camera_message.home_pos) # 物块->终点
+                    if d1 < ITEM_COLLIDE_THRESH or d2 < ITEM_COLLIDE_THRESH:
+                        collide = True
+                        break
+                if not collide:
+                    path_length: float = item.real_coord.dist_to_point(car_pos) + item.real_coord.dist_to_point(camera_message.home_pos)
+                    if path_length < closest_length:
+                        closest_id = ind
+                        closest_length = path_length
+
+            if closest_id < 0:
+                self.__log_once("[主算法] 未找到有效目标", COMMAND_COLOR)
+                continue
+            else:
+                self.__log_once("[主算法] 向目标%s移动" % str(camera_message.item_list[closest_id].real_coord), COMMAND_COLOR)
+
+            # 导航过去
+            self.__navigate_to(camera_message.item_list[closest_id].real_coord, 0.20, math.radians(20))
+
+            self.__log_once("[主算法] 进入抓取模式", COMMAND_COLOR)
+            self.stm32_serial.inst_grab_mode()
+            if not self.__wait_for_result("grab"):
+                continue
+
+            # 导航回家
+            self.__navigate_to(camera_message.home_pos, 0.3, math.radians(45))
+
+            self.__log_once("[主算法] 进入放置模式", COMMAND_COLOR)
+            self.stm32_serial.inst_place_mode()
+            if not self.__wait_for_result("place"):
+                continue
+
+            self.__log_once("[主算法] 放置成功", COMMAND_COLOR)
+            collected_blocks += 1
+            if collected_blocks >= 10:
+                break
+    def __wait_for_result(self, command_type: Literal["grab", "place", "shift", "steer"]) -> bool:
+        """阻塞式地等待指令的结果"""
+        while True:
+            message = self.__alg_message_queue.get().decode()
+            if (command_type == "shift" or command_type == "steer") and message.startswith("SUCCESS: %s" % command_type):
+                return True
+            if len(message) != STM32_INSTRUCTION_LENGTH - 2:
+                continue
+            if message.startswith("GR") and command_type == "grab":
+                return message == GRAB_SUCCESS_CONTENT
+            if message.startswith("PL") and command_type == "place":
+                return message == PLACE_SUCCESS_CONTENT
+    def __navigate_to(self, target_pos: Point, dist_thresh: float, angle_thresh: float) -> None:
+        """导航至某位置, 该函数在小车到位后才会返回"""
+        while True:
+            camera_message: Camera_message = deepcopy(self.camera_message)
+            car_pos: Point = camera_message.car_pose[0]
+            target_distance = car_pos.dist_to_point(target_pos)
+            target_angle_diff = Point.angle_between(camera_message.car_pose[1], car_pos.angle_to(target_pos))
+
+            # 完成条件
+            if target_distance < dist_thresh and Point.angle_like(camera_message.car_pose[1], car_pos.angle_to(target_pos), angle_thresh):
+                break
+            elif target_distance < dist_thresh: # 距离在范围内, 只需旋转
+                self.stm32_serial.inst_steer(round(math.degrees(target_angle_diff)))
+                self.__wait_for_result("steer")
+            else: # 距离也不在范围内
+                # 先转过去
+                self.stm32_serial.inst_steer(round(math.degrees(target_angle_diff)))
+                self.__wait_for_result("steer")
+                # 再前进
+                self.stm32_serial.inst_shift(round((target_distance - dist_thresh) * 1000), 0)
+                self.__wait_for_result("shift")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    win = Control_panel(no_STM=True, no_camera=True)
+    win = Control_panel(no_STM=True, no_camera=False)
     win.show()
 
     app.exec()
