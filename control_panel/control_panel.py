@@ -256,7 +256,7 @@ class Control_panel(QMainWindow, Ui_MainWindow):
             self.deactivate_algorithm_button.setEnabled(False)
 
         # log panel
-        self.log_panel.verticalScrollBar().rangeChanged.connect(self.__log_scroll_bar)
+        self.log_panel.verticalScrollBar().rangeChanged.connect(self.__log_scroll_bar) # type: ignore
 
         # camera
         self.camera_signal.connect(self.__update_image_main)
@@ -289,12 +289,12 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                     if ind == other_ind:
                         continue
                     d1 = other.real_coord.dist_to_segment(car_pos, item.real_coord) # 小车->物块
-                    d2 = other.real_coord.dist_to_segment(item.real_coord, camera_message.home_pos) # 物块->终点
+                    d2 = other.real_coord.dist_to_segment(item.real_coord, CC.HOME_POS) # 物块->终点
                     if d1 < ITEM_COLLIDE_THRESH or d2 < ITEM_COLLIDE_THRESH:
                         collide = True
                         break
                 if not collide:
-                    path_length: float = item.real_coord.dist_to_point(car_pos) + item.real_coord.dist_to_point(camera_message.home_pos)
+                    path_length: float = item.real_coord.dist_to_point(car_pos) + item.real_coord.dist_to_point(CC.HOME_POS)
                     if path_length < closest_length:
                         closest_id = ind
                         closest_length = path_length
@@ -306,16 +306,20 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                 self.__log_once("[主算法] 向目标%s移动" % str(camera_message.item_list[closest_id].real_coord), COMMAND_COLOR)
 
             # 导航过去
-            self.__navigate_to(camera_message.item_list[closest_id].real_coord, 0.20, math.radians(20))
+            self.label_alg_step_display.setText("接近物块")
+            self.__navigate_to(camera_message.item_list[closest_id].real_coord, 0.2, math.radians(20))
 
+            self.label_alg_step_display.setText("拾取物块")
             self.__log_once("[主算法] 进入抓取模式", COMMAND_COLOR)
             self.stm32_serial.inst_grab_mode()
             if not self.__wait_for_result("grab"):
                 continue
 
             # 导航回家
-            self.__navigate_to(camera_message.home_pos, 0.3, math.radians(45))
+            self.label_alg_step_display.setText("返回目标区")
+            self.__navigate_to(CC.HOME_POS, 0.3, math.radians(45))
 
+            self.label_alg_step_display.setText("放置物块")
             self.__log_once("[主算法] 进入放置模式", COMMAND_COLOR)
             self.stm32_serial.inst_place_mode()
             if not self.__wait_for_result("place"):

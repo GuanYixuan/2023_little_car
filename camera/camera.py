@@ -7,6 +7,7 @@
 """
 import os, sys
 if __name__ == '__main__':
+    os.chdir(os.path.dirname(__file__))
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__))))
 
 import cv2
@@ -17,6 +18,7 @@ import numpy as np
 import pupil_apriltags
 from multiprocessing.queues import Queue
 from multiprocessing.synchronize import Condition
+import matplotlib.pyplot as plt
 
 # 从自己写的包中import
 if __name__ == '__main__':
@@ -43,10 +45,17 @@ class Item:
     pixel_pos: Point
     """物品在俯视图中的 *像素坐标* """
     index: int
+    """物品编号, 用于物品追踪"""
+    color: str
 
-    def __init__(self, _pixel_pos: Point, _index: int) -> None:
+    bind: int
+    """与这个物品'粘合'的物品index, -1表示未粘合"""
+
+    def __init__(self, _pixel_pos: Point, color: str, _index: int) -> None:
         self.pixel_pos = _pixel_pos
+        self.color = color
         self.index = _index
+        self.bind = -1
 
     @property
     def real_coord(self) -> Point:
@@ -59,8 +68,6 @@ class Camera_message:
     timestamp: float
     """消息生成的时间戳"""
 
-    home_pos: Point
-    """(己方)目标区域位置"""
     enemy_home_pos: Point
     """对方目标区域位置"""
     item_list: List[Item]
@@ -99,11 +106,11 @@ class Camera:
     car_last_update: float
     """最后一次看见小车的时间, 采用time.monotonic()"""
 
-    image_rgb: NDArray
+    image_rgb: NDArray[np.uint8]
     """当前最新的图片, 已去畸变"""
     image_gray: NDArray
     """灰度化后的最新图片, 已去畸变"""
-    transformed_rgb: NDArray
+    transformed_rgb: NDArray[np.uint8]
     """变换后的最新图片, 已去畸变"""
     rendered_picture: NDArray[np.uint8]
     """叠加显示了各元素的图像"""
@@ -155,7 +162,7 @@ class Camera:
         cv2.waitKey(-1)
 
         # 生成变换矩阵
-        corner_list = [(54, 621), (1091, 953), (1193, 59), (305, 135)]
+        corner_list = [(134, 728), (1056, 839), (1046, 69), (311, 272)]
         assert len(corner_list) == 4
         self.transform_to_top = cv2.getPerspectiveTransform(np.array(corner_list, dtype=np.float32),
                                             np.array([(0, CC.TRANSFORMED_HEIGHT), (CC.TRANSFORMED_WIDTH, CC.TRANSFORMED_HEIGHT), (CC.TRANSFORMED_WIDTH, 0), (0, 0)], dtype=np.float32))
@@ -242,7 +249,12 @@ class Camera:
         # 创建连边列表 Tuple[旧index, 新index, distance]
         edges: List[Tuple[int, int, float]] = []
         for old_index, old_item in enumerate(self.item_list):
-            edges.extend([(old_index, new_index, old_item.real_coord.dist_to_point(new_list[new_index].real_coord)) for new_index in range(len(new_list))])
+            if old_item.bind >= 0: # bind的物体不连边
+                continue
+            for new_index, new_item in enumerate(new_list):
+                if new_item.color != old_item.color: # 不同色的物体不连边
+                    continue
+                edges.append((old_index, new_index, old_item.real_coord.dist_to_point(new_list[new_index].real_coord)))
 
         # 按距离排序并建立对应关系
         edges.sort(key=lambda tup: tup[2])
@@ -252,13 +264,43 @@ class Camera:
             if old_used[link[0]] or new_used[link[1]]:
                 continue
             old_used[link[0]] = new_used[link[1]] = 1
-            merged_list.append(Item(new_list[link[1]].pixel_pos, self.item_list[link[0]].index))
+            merged_list.append(Item(new_list[link[1]].pixel_pos, new_list[link[1]].color, self.item_list[link[0]].index))
 
         # 让新的Item进来
         for new_index, new_item in enumerate(new_list):
             if not new_used[new_index]:
-                merged_list.append(Item(new_item.pixel_pos, self.item_index_counter))
+                # 检查是否是一次"分离"
+                sep_index: int = -1
+                for old_index, old_item in enumerate(self.item_list):
+                    if old_item.bind < 0 or old_item.color != new_item.color or old_item.real_coord.dist_to_point(new_item.real_coord) > CC.BLOCK_COMBINE_THRESH:
+                        continue
+                    sep_index = old_index
+                    break
+                if sep_index >= 0:
+                    self.item_list[sep_index].bind = -1 # 解bind并复用index
+                    old_used[sep_index] = True
+                    merged_list.append(Item(new_item.pixel_pos, new_item.color, self.item_list[sep_index].index))
+                    continue
+
+                # 否则分配新的index
+                merged_list.append(Item(new_item.pixel_pos, new_item.color, self.item_index_counter))
                 self.item_index_counter += 1
+
+        # 旧的找不到, 则考虑合并
+        for old_index, old_item in enumerate(self.item_list):
+            if old_used[old_index] or old_item.bind >= 0:
+                continue
+            for new_index, new_item in enumerate(merged_list): # 注意此处是merged_list
+                if new_item.color == old_item.color and old_item.real_coord.dist_to_point(new_item.real_coord) <= CC.BLOCK_COMBINE_THRESH:
+                    itm = Item(new_item.pixel_pos, new_item.color, old_item.index)
+                    itm.bind = new_item.index
+                    merged_list.append(itm)
+                    break
+
+        # 继承bind
+        for old_index, old_item in enumerate(self.item_list):
+            if old_item.bind >= 0 and any(map(lambda item: item.index == old_item.bind, self.item_list)):
+                 merged_list.append(old_item)
 
         self.item_list = merged_list
     def __find_items(self) -> List[Item]:
@@ -267,28 +309,27 @@ class Camera:
 
         # 模糊后进行颜色筛选
         blurred = cv2.cvtColor(cv2.GaussianBlur(self.image_rgb, (CC.GAUSS_BLUR_KSIZE, CC.GAUSS_BLUR_KSIZE), CC.GAUSS_BLUR_KSIZE/3), cv2.COLOR_BGR2HSV)
-        block_mask = cv2.inRange(blurred, CC.BLOCK_HSV_LOWERBOUND, CC.BLOCK_HSV_UPPERBOUND) # type: ignore
+        for color in CC.BLOCK_HSV_LOWERBOUND:
+            block_mask = cv2.inRange(blurred, CC.BLOCK_HSV_LOWERBOUND[color], CC.BLOCK_HSV_UPPERBOUND[color]) # type: ignore
 
-        # 分离轮廓
-        raw_contours, _unused = cv2.findContours(block_mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+            # 分离轮廓
+            raw_contours, _unused = cv2.findContours(block_mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
-        for ind, contour in enumerate(raw_contours):
-            if cv2.contourArea(contour) < CC.BLOCK_SIZE_THRESH:
-                continue
+            for ind, contour in enumerate(raw_contours):
+                if cv2.contourArea(contour) < CC.BLOCK_SIZE_THRESH:
+                    continue
 
-            # 取最靠屏幕下方的像素位置
-            contour_img: NDArray[np.uint8] = cv2.drawContours(np.zeros(self.image_rgb.shape[:-1]), raw_contours, ind, (1,), -1)
-            pixels: NDArray[np.int32] = np.where(contour_img == 1)
-            bottom_ind = np.argmax(pixels[0])
-            bottom_position: Tuple[int, int] = (pixels[1][bottom_ind], pixels[0][bottom_ind])
-            transformed_position = self.transform_points(bottom_position, True)
+                # 取最靠屏幕下方的像素位置
+                contour_img: NDArray[np.uint8] = cv2.drawContours(np.zeros(self.image_rgb.shape[:-1]), raw_contours, ind, (1,), -1)
+                pixels: NDArray[np.int32] = np.where(contour_img == 1)
+                bottom_ind = np.argmax(pixels[0])
+                bottom_position: Tuple[int, int] = (pixels[1][bottom_ind], pixels[0][bottom_ind])
+                transformed_position = self.transform_points(bottom_position, True)
 
-            # 绘制图形(调试用)
-            cv2.circle(self.transformed_rgb, transformed_position, 5, (0, 255, 0), -1)
-
-            # 生成列表
-            if Point(*transformed_position).in_range((0, CC.TRANSFORMED_WIDTH), (0, CC.TRANSFORMED_HEIGHT)):
-                ret.append(Item(Point(*transformed_position), -1))
+                # 生成列表
+                if Point(*transformed_position).in_range((-CC.BLOCK_OUTLIER_THRESH, CC.TRANSFORMED_WIDTH+CC.BLOCK_OUTLIER_THRESH),
+                                                        (-CC.BLOCK_OUTLIER_THRESH, CC.TRANSFORMED_HEIGHT+CC.BLOCK_OUTLIER_THRESH)):
+                    ret.append(Item(Point(*transformed_position), color, -1))
 
         return ret
 
@@ -322,13 +363,21 @@ class Camera:
             self.__refresh_items()
             self.__estimate_car_pose()
 
-            # 绘制物品坐标
+            # 绘制场地
             self.rendered_picture = np.copy(self.transformed_rgb)
             scale_factor: float = CC.FIELD_SIZE[0] / CC.TRANSFORMED_WIDTH
+            cv2.circle(self.rendered_picture, round(CC.HOME_POS / scale_factor), 6, CC.HOME_DISPLAY_COLOR, -1)
+            if isinstance(CC.ENEMY_HOME_POS, Point):
+                cv2.circle(self.rendered_picture, round(CC.ENEMY_HOME_POS / scale_factor), 6, CC.ENEMY_HOME_DISPLAY_COLOR, -1)
+
+            # 绘制物品坐标
             for item in self.item_list:
-                cv2.circle(self.rendered_picture, round(item.pixel_pos), 4, CC.BLOCK_DISPLAY_COLOR, -1)
+                disp_color = CC.BLOCK_COMBINED_COLOR if item.bind >= 0 else CC.BLOCK_DISPLAY_COLOR
+                disp_nudge = Point(0, -20) if item.bind >= 0 else Point(0, 0)
+
+                cv2.circle(self.rendered_picture, round(item.pixel_pos + disp_nudge), 2, disp_color, -1)
                 out_str = "%d (%.2f, %.2f)" % (item.index, *item.real_coord)
-                cv2.putText(self.rendered_picture, out_str, round(item.pixel_pos), cv2.FONT_HERSHEY_COMPLEX, 0.5, CC.BLOCK_DISPLAY_COLOR)
+                cv2.putText(self.rendered_picture, out_str, round(item.pixel_pos + disp_nudge), cv2.FONT_HERSHEY_COMPLEX, 0.5, disp_color)
 
             # 绘制小车位置与方向
             if hasattr(self, "car_pose"):
@@ -341,7 +390,6 @@ class Camera:
             # 回传消息
             if isinstance(self.message_queue, Queue):
                 msg = Camera_message()
-                msg.home_pos = Point(0, 0)
                 msg.item_list = self.item_list
                 msg.car_pose = self.car_pose
                 msg.car_last_update = self.car_last_update

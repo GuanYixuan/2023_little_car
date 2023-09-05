@@ -1,8 +1,10 @@
 """与场外相机模块相关的常数"""
 
 import numpy as np
+from .utils import Point
 
-from typing import Tuple, List
+from typing import Tuple, List, Dict
+from typing import Optional
 from numpy.typing import NDArray
 
 # 不同分辨率下的内参
@@ -24,7 +26,7 @@ DISTORTION_COEFFICIENTS: NDArray[np.float64] = np.array(DISTORTION_COEFFICIENTS_
 # 几何与变换常数
 TAG_SIZE: float = 0.12
 """所用的AprilTag大小"""
-FIELD_SIZE: Tuple[float, float] = (3.0, 2.0)
+FIELD_SIZE: Tuple[float, float] = (2.4, 1.6)
 """场地大小, 单位为米"""
 TRANSFORMED_WIDTH: int = 900
 """变换后图像的宽度"""
@@ -36,18 +38,31 @@ SELECT_CORNER_LINE_COLOR: Tuple[int, int, int] = (0, 196, 0)
 # 物品识别相关常数
 GAUSS_BLUR_KSIZE: int = 3
 """预先进行的高斯模糊的Kernel size"""
-BLOCK_HSV_LOWERBOUND: Tuple[int, int, int] = (17, 96, 128)
+BLOCK_HSV_LOWERBOUND: Dict[str, Tuple[int, int, int]] = {"green": (60, 64, 36), "orange": (0, 140, 128)}
 """物块色彩HSV下界"""
-BLOCK_HSV_UPPERBOUND: Tuple[int, int ,int] = (33, 255, 255)
+BLOCK_HSV_UPPERBOUND: Dict[str, Tuple[int, int, int]] = {"green": (80, 255, 255), "orange": (12, 255, 255)}
 """物块色彩HSV上界"""
 BLOCK_SIZE_THRESH: int = 30
 """物块大小阈值"""
+BLOCK_OUTLIER_THRESH: float = 0.15
+"""物块'在界外'的判定阈值"""
+BLOCK_COMBINE_THRESH: float = 0.1
+"""允许物块'粘合'与'分离'的距离阈值"""
 BLOCK_DISPLAY_COLOR: Tuple[int, int ,int] = (0, 255, 0)
-"""物块在渲染图中的标记颜色"""
+"""一般物块在渲染图中的标记颜色"""
+BLOCK_COMBINED_COLOR: Tuple[int, int ,int] = (192, 192, 0)
+"""'合并'的物块在渲染图中的标记颜色"""
 
 # 小车定位相关常数
 CAR_DISPLAY_COLOR: Tuple[int, int, int] = (0, 255, 0)
 """小车在渲染图中的标记颜色"""
+
+# 目标区域相关常数
+AVAILABLE_HOME_POSE: Dict[str, Point] = {"lb": Point(0.1, 0.15), "rt": Point(2.9, 1.85)}
+HOME_POS: Point = AVAILABLE_HOME_POSE["lb"]
+ENEMY_HOME_POS: Optional[Point] = None
+HOME_DISPLAY_COLOR: Tuple[int, int, int] = (255, 80, 80)
+ENEMY_HOME_DISPLAY_COLOR: Tuple[int, int, int] = (80, 80, 255)
 
 # 系统相关常数
 TARGET_UPDATE_PERIOD: float = 0.3
