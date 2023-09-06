@@ -88,7 +88,7 @@ bool forward(int16_t dist) {
     }
 
     // 进入PID循环
-    for (int encoder_cnt = 0; encoder_cnt < cnt_max; ) {
+    for (int encoder_cnt = 0; encoder_cnt <= cnt_max; ) {
         for (int i = 0; i < 4; i ++) {
             /*读取编码器*/
             i_encoder_temp[i] = abs(GetTimEncoder(i));
@@ -118,33 +118,33 @@ bool forward(int16_t dist) {
     return true;
 }
 
-void right(int16_t dist) {
+bool right(int16_t dist) {
+    return true;
     // 零距离平移 = 刹车
     if (dist == 0) {
         Brake();
-        return;
+        return true;
     }
 
     int cnt_max = 0;
-    int i_cnt = 0;
     int dist_positive = 0;
     if (dist > 0) {
         dist_positive = dist * RIGHT_RATIO;
-        SetRotateDirection(&motor[0], 90);
-        SetRotateDirection(&motor[1], -90);
-        SetRotateDirection(&motor[2], 90);
-        SetRotateDirection(&motor[3], -90);
+        SetRotateDirection(&motor[0], 1);
+        SetRotateDirection(&motor[1], -1);
+        SetRotateDirection(&motor[2], 1);
+        SetRotateDirection(&motor[3], -1);
         cnt_max = distToCnt(dist_positive);
     } else if (dist < 0) {
         dist_positive = - dist * RIGHT_RATIO;
-        SetRotateDirection(&motor[0], -90);
-        SetRotateDirection(&motor[1], 90);
-        SetRotateDirection(&motor[2], -90);
-        SetRotateDirection(&motor[3], 90);
+        SetRotateDirection(&motor[0], -1);
+        SetRotateDirection(&motor[1], 1);
+        SetRotateDirection(&motor[2], -1);
+        SetRotateDirection(&motor[3], 1);
         cnt_max = distToCnt(dist_positive);
     }
 
-    while (1) {
+   for (int encoder_cnt = 0; encoder_cnt <= cnt_max; ) {
         for (int i = 0; i < 4; i ++) {
             i_tim8_ccr_target[i] = 95;
             /*读取编码器*/
@@ -164,18 +164,16 @@ void right(int16_t dist) {
         }
         HAL_Delay(DT);
 
-        if (i_encoder_output[0]) i_cnt += (i_encoder_temp[0] + i_encoder_temp[1] + i_encoder_temp[2] + i_encoder_temp[3]) / 4;
-        my_printf("channels:%i, %i, %i, %i, %i\n", i_encoder_output[0], i_encoder_output[1], i_encoder_output[2], i_encoder_output[3], i_cnt);
-
-        if (i_cnt >= cnt_max) {
-            for (int i = 0; i < 4; i ++) {
-                SetRotateSpeed(&motor[i], 0);
-                Rotate(&motor[i]);
-                i_tim8_ccr_target[i] = 0;
-            }
-            break;
-        }
+        if (i_encoder_output[0]) encoder_cnt += (i_encoder_temp[0] + i_encoder_temp[1] + i_encoder_temp[2] + i_encoder_temp[3]) / 4;
+        my_printf("channels:%i, %i, %i, %i, %i\n", i_encoder_output[0], i_encoder_output[1], i_encoder_output[2], i_encoder_output[3], encoder_cnt);
     }
+    // Finish up
+    for (int i = 0; i < 4; i ++) {
+        SetRotateSpeed(&motor[i], 0);
+        Rotate(&motor[i]);
+        i_tim8_ccr_target[i] = 0;
+    }
+    return true;
 }
 
 #define STEER_DT 33
@@ -213,7 +211,7 @@ bool steer(int16_t angle) {
     }
 
     // 进入PID循环
-    for (int encoder_cnt = 0; encoder_cnt < cnt_max; ) {
+    for (int encoder_cnt = 0; encoder_cnt <= cnt_max; ) {
         for (int i = 0; i < 4; i ++) {
             /*读取编码器*/
             i_encoder_temp[i] = abs(GetTimEncoder(i));
@@ -241,6 +239,11 @@ bool steer(int16_t angle) {
         i_tim8_ccr_target[i] = 0;
     }
     return true;
+}
+
+bool shift(int16_t _forward, int16_t shift_right) {
+    bool ret = forward(_forward);
+    return ret && right(shift_right);
 }
 
 int distToCnt(int16_t dist)

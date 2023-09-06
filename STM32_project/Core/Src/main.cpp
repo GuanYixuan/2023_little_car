@@ -24,6 +24,7 @@
 #include "move.hpp"
 #include "motor.hpp"
 #include "pid.hpp"
+#include "STM_queues.hpp"
 
 #include <stdlib.h>
 #include <string.h>
@@ -106,6 +107,57 @@ static void MX_TIM4_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+#define PC_UART_HANDLE huart1
+#define OpenMV_UART_HANDLE huart2
+
+#define INSTRUCTION_RECEIVE_TIMEOUT_MS 2000
+
+constexpr const char* RETURN_MESSAGES[2] = {"FAIL", "SUCCESS"};
+
+message_queue messages;
+instruction_queue queue;
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+  static uint8_t PC_receive_count = -1; // 务必手动调用第一次
+  static uint8_t PC_buffer[INSTRUCTION_LENGTH];
+  static uint32_t PC_last_ins = HAL_GetTick();
+
+  static uint8_t OpenMV_receive_count = -1; // 务必手动调用第一次
+  static uint8_t OpenMV_buffer[INSTRUCTION_LENGTH];
+  static uint32_t OpenMV_last_ins = HAL_GetTick();
+
+  if (huart->Instance == PC_UART_HANDLE.Instance) { // PC端
+    PC_receive_count++;
+
+    if (PC_receive_count >= 2 && HAL_GetTick() > PC_last_ins + INSTRUCTION_RECEIVE_TIMEOUT_MS) { // 接收超时
+      PC_receive_count = 1;
+      PC_buffer[0] = huart->Instance->DR;
+      messages.append((uint8_t*)"PC RECV TIMEOUT\n");
+    } else if (PC_receive_count == INSTRUCTION_LENGTH) { // 接收到完整指令
+      PC_receive_count = 0;
+      if (!queue.push(PC_buffer)) messages.append((uint8_t*)"QUEUE FULL\n");
+    }
+
+    PC_last_ins = HAL_GetTick();
+    HAL_UART_Receive_IT(huart, PC_buffer + PC_receive_count, 1);
+  } else if (huart->Instance == OpenMV_UART_HANDLE.Instance) { // OpenMV端
+    OpenMV_receive_count++;
+
+    if (OpenMV_receive_count >= 2 && HAL_GetTick() > OpenMV_last_ins + INSTRUCTION_RECEIVE_TIMEOUT_MS) { // 接收超时
+      OpenMV_receive_count = 1;
+      OpenMV_buffer[0] = huart->Instance->DR;
+      messages.append((uint8_t*)"MV RECV TIMEOUT\n");
+    } else if (OpenMV_receive_count == INSTRUCTION_LENGTH) { // 接收到完整指令
+      OpenMV_receive_count = 0;
+      if (!queue.push(OpenMV_buffer)) messages.append((uint8_t*)"QUEUE FULL\n");
+    }
+
+    OpenMV_last_ins = HAL_GetTick();
+    HAL_UART_Receive_IT(huart, OpenMV_buffer + OpenMV_receive_count, 1);
+  }
+
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -115,7 +167,6 @@ static void MX_TIM4_Init(void);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-	int dist = 0;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -185,40 +236,60 @@ int main(void)
   PID_Init(&pid[2], 0.6, 0.1, 0.13);
   PID_Init(&pid[3], 0.6, 0.1, 0.13);
 
-  // PID_Init(&pid[0], 0, 0, 0);
-  // PID_Init(&pid[1], 0, 0, 0);
-  // PID_Init(&pid[2], 0, 0, 0);
-  // PID_Init(&pid[3], 0, 0, 0);
-
-
   /*MOTOR初始化*/
-  for(int i = 0 ; i < 4; i ++)
-  {
-    MotorInit(&motor[i], i);
-  }
-
-  /*时间初始化*/
-//  *i_time = 0;
+  for(int i = 0 ; i < 4; i ++) MotorInit(&motor[i], i);
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-while (1)
-  {
+  // 第一次需要手动调用中断
+  HAL_UART_RxCpltCallback(&PC_UART_HANDLE);
+  HAL_UART_RxCpltCallback(&OpenMV_UART_HANDLE);
+  // 主循环
+  while (1) {
+    if (!messages.empty()) {
+      const uint8_t* message = messages.retrieve();
+      HAL_UART_Transmit(&PC_UART_HANDLE, message, strlen((char*)message), 1000);
+    } else if (queue.count()) {
+      const instruction* ins = queue.front();
+
+      bool success = false;
+      uint8_t ins_type = ins->data[0];
+      if (ins_type == 0x10) {
+        int16_t angle = *(int16_t*)(ins->data + 1);
+        success = steer(angle);
+        messages.wrap_append("%s: steer %hd\n", RETURN_MESSAGES[success], angle);
+      } else if (ins_type == 0x20) {
+        int16_t forward = *(int16_t*)(ins->data + 1);
+        int16_t shift_right = *(int16_t*)(ins->data + 3);
+        success = shift(forward, shift_right);
+        messages.wrap_append("%s: shift %hd %hd\n", RETURN_MESSAGES[success], forward, shift_right);
+      } else if (ins_type == 0x31) HAL_UART_Transmit(&PC_UART_HANDLE, &ins->data[1], INSTRUCTION_LENGTH - 1, 1000);
+      else if (ins_type == 0x32) HAL_UART_Transmit(&OpenMV_UART_HANDLE, &ins->data[1], INSTRUCTION_LENGTH - 1, 1000);
+      else messages.wrap_append("ILLEGAL INST 0x%02hx\n", ins_type);
+
+      queue.pop();
+    }
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-   if (Uart1_RxFlag != 0)
-   {
-     Uart1_RxFlag = 0;
-     Uart1_RxCnt = 0;
-     dist = atoi((char*)Uart1_RxString);
-   }
-   steer(dist);
-   dist = 0;
   }
-  /* USER CODE END 3 */
+// while (1)
+//   {
+//     /* USER CODE END WHILE */
+//     /* USER CODE BEGIN 3 */
+//    if (Uart1_RxFlag != 0)
+//    {
+//      Uart1_RxFlag = 0;
+//      Uart1_RxCnt = 0;
+//      dist = atoi((char*)Uart1_RxString);
+//    }
+//    steer(dist);
+//    dist = 0;
+//   }
+//   /* USER CODE END 3 */
 }
 
 /**
@@ -635,38 +706,36 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *UartHandle)
-{
-
-  if (UartHandle->Instance == USART1)
-  {
-    if (Uart1_RxCnt >= 19)
-    {
-      Uart1_RxCnt = 0;
-      HAL_UART_Transmit(&huart1, (uint8_t*)"数据溢出\r\n",sizeof("数据溢出\r\n"), 10);
-      memset(Uart1_RxString, 0x00, sizeof(Uart1_RxString));
-    }
-    else
-    {
-      Uart1_RxString[Uart1_RxCnt++] = Uart1_RxBuffer;
-      if (Uart1_RxString[Uart1_RxCnt - 1] == '\n')
-      {
-        Uart1_RxString[Uart1_RxCnt] = '\0';
-        Uart1_RxFlag = 1;
-        Uart1_RxCnt = 0;
-      }
-    }
-    HAL_UART_Receive_IT(&huart1, &Uart1_RxBuffer, 1);
-  }
-
-  else if (UartHandle->Instance == USART2)
-  {
-    // printf((char*)Uart2_RxString);
-    // HAL_UART_Transmit(&huart1, Uart2_RxString, 6, 10);
-    memset(Uart2_RxString, 0x00, sizeof(Uart2_RxString));
-    HAL_UART_Receive_IT(&huart2, Uart2_RxString, 6);
-  }
-}
+// void HAL_UART_RxCpltCallback(UART_HandleTypeDef *UartHandle)
+// {
+//   if (UartHandle->Instance == USART1)
+//   {
+//     if (Uart1_RxCnt >= 19)
+//     {
+//       Uart1_RxCnt = 0;
+//       HAL_UART_Transmit(&huart1, (uint8_t*)"数据溢出\r\n",sizeof("数据溢出\r\n"), 10);
+//       memset(Uart1_RxString, 0x00, sizeof(Uart1_RxString));
+//     }
+//     else
+//     {
+//       Uart1_RxString[Uart1_RxCnt++] = Uart1_RxBuffer;
+//       if (Uart1_RxString[Uart1_RxCnt - 1] == '\n')
+//       {
+//         Uart1_RxString[Uart1_RxCnt] = '\0';
+//         Uart1_RxFlag = 1;
+//         Uart1_RxCnt = 0;
+//       }
+//     }
+//     HAL_UART_Receive_IT(&huart1, &Uart1_RxBuffer, 1);
+//   }
+//   else if (UartHandle->Instance == USART2)
+//   {
+//     // printf((char*)Uart2_RxString);
+//     // HAL_UART_Transmit(&huart1, Uart2_RxString, 6, 10);
+//     memset(Uart2_RxString, 0x00, sizeof(Uart2_RxString));
+//     HAL_UART_Receive_IT(&huart2, Uart2_RxString, 6);
+//   }
+// }
 
 /* USER CODE END 4 */
 
