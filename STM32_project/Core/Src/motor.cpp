@@ -14,9 +14,6 @@
 
 extern TIM_HandleTypeDef* timer[4];
 extern TIM_HandleTypeDef htim8;
-extern uint16_t rotate_0[4];
-extern uint16_t rotate_1[4];
-extern uint32_t PWM_channels[4];
 extern uint32_t TIM8_CCR[4];
 
 

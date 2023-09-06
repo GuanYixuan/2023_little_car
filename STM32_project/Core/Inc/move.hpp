@@ -3,20 +3,51 @@
 
 #include <stdint.h>
 
-int GetTimEncoder(int encoder_serial);
-
-void Brake(void);
-
+// 前进指令参数组数
+constexpr int FORWARD_PARAM_SET_COUNT = 5;
+// 前进指令的最短距离, 小于等于此值则会被设置为1
+constexpr int FORWARD_MIN = 12;
 // 不同距离前进指令所用的参数
 // 格式是(min_dist, 四个_ccr_target)
-constexpr int forward_params[2][5] = {
-    {1, 28, 28, 30, 30},
-    {800, 90, 90, 96, 96}
+constexpr int FORWARD_PARAMS[FORWARD_PARAM_SET_COUNT][5] = {
+    {0, 20, 20, 20, 21},
+    {40, 20, 20, 20, 21},
+    {120, 30, 30, 31, 31},
+    {500, 50, 50, 51, 52},
+    {1000, 80, 80, 83, 83}
 };
+// 不同距离前进指令所加的距离调整系数
+constexpr float FORWARD_OFFSET[FORWARD_PARAM_SET_COUNT] = {0, -30, -60, -100, -230};
 
-void forward(int16_t forward_time);
+// 转弯指令参数组数
+constexpr int STEER_PARAM_SET_COUNT = 3;
+// 转弯指令的最小转角, 小于等于此值则会被设置为1
+constexpr int STEER_MIN = 3;
+// 不同角度转弯指令所用的参数
+// 格式是(min_angle, 四个_ccr_target)
+constexpr int STEER_PARAMS[STEER_PARAM_SET_COUNT][5] = {
+    {0, 20, 20, 20, 21},
+    {15, 30, 30, 30, 31},
+    {90, 40, 40, 41, 41},
+};
+// 不同角度转弯指令所加的距离调整系数
+constexpr float STEER_OFFSET[STEER_PARAM_SET_COUNT] = {-1, -7, -10};
 
+
+int GetTimEncoder(int encoder_serial);
+void my_printf(const char* format, ...);
+
+// 中间层接口, 让小车进入刹车状态
+void Brake(void);
+
+// 中间层接口, 让小车前进指定的毫米数, 负数表示后退
+bool forward(int16_t forward_time);
+
+// 中间层接口, 让小车向右平移指定的毫米数, 负数表示左移
 void right(int16_t right_time);
+
+// 让小车逆时针旋转指定的角度, 负数表示顺时针旋转
+bool steer(int16_t right_time);
 
 int distToCnt(int16_t dist);
 #endif

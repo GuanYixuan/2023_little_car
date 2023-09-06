@@ -82,8 +82,7 @@ int pid_update[4];
 
 MOTOR motor[4];
 TIM_HandleTypeDef* MOTOR_TIMER_HANDLE_P[4] = {&htim1, &htim2, &htim3, &htim4};
-uint16_t rotate_0[4] = {GPIO_PIN_0, GPIO_PIN_2, GPIO_PIN_5, GPIO_PIN_7};
-uint16_t rotate_1[4] = {GPIO_PIN_1, GPIO_PIN_3, GPIO_PIN_4, GPIO_PIN_6};
+
 
 int i_encoder_temp[4];
 int i_encoder_output[4];
@@ -107,20 +106,6 @@ static void MX_TIM4_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-/*串口printf()重定向*/
-#include "stdio.h"
-
-#ifdef __GNUC__
-#define PUTCHAR_PROTOTYPE int __io_putchar(int ch)
-#else
-#define PUTCHAR_PROTOTYPE int fputc(int ch, FILE *f)
-#endif
-PUTCHAR_PROTOTYPE
-{
-    HAL_UART_Transmit(&huart1 , (uint8_t *)&ch, 1, 0xFFFF);
-    return ch;
-}
-
 /* USER CODE END 0 */
 
 /**
@@ -230,7 +215,7 @@ while (1)
      Uart1_RxCnt = 0;
      dist = atoi((char*)Uart1_RxString);
    }
-   forward(dist);
+   steer(dist);
    dist = 0;
   }
   /* USER CODE END 3 */
@@ -676,7 +661,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *UartHandle)
 
   else if (UartHandle->Instance == USART2)
   {
-    printf((char*)Uart2_RxString);
+    // printf((char*)Uart2_RxString);
     // HAL_UART_Transmit(&huart1, Uart2_RxString, 6, 10);
     memset(Uart2_RxString, 0x00, sizeof(Uart2_RxString));
     HAL_UART_Receive_IT(&huart2, Uart2_RxString, 6);
