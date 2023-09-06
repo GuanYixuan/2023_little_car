@@ -1,12 +1,12 @@
-#ifndef INC_MOTOR_H_
-#define INC_MOTOR_H_
+#ifndef INC_MOTOR_HPP_
+#define INC_MOTOR_HPP_
 
-typedef struct{
+struct MOTOR{
     int motor_serial;
     int rotate_speed;
     int rotate_time;
     int rotate_direction;
-} MOTOR;
+};
 
 void MotorInit(MOTOR *motor, int seial);
 void SetRotateSpeed(MOTOR *motor, int rotate_speed);

@@ -1,4 +1,4 @@
-#include "motor.h"
+#include "motor.hpp"
 #include "main.h"
 /* USER CODE BEGIN PD */
 # define DT 100 // 100ms
@@ -50,17 +50,6 @@ void SetRotateDirection(MOTOR *motor, int speed)
 
 void Rotate(MOTOR *motor)
 {
-    // if (motor->rotate_speed >= 0)
-    // {
-    //     HAL_GPIO_WritePin(GPIOD, rotate_0[motor->motor_serial], GPIO_PIN_RESET);
-    //     HAL_GPIO_WritePin(GPIOD, rotate_1[motor->motor_serial], GPIO_PIN_SET);
-    // }
-    // else
-    // {
-    //     motor->rotate_speed = - motor->rotate_speed;
-    //     HAL_GPIO_WritePin(GPIOD, rotate_0[motor->motor_serial], GPIO_PIN_SET);
-    //     HAL_GPIO_WritePin(GPIOD, rotate_1[motor->motor_serial], GPIO_PIN_RESET);
-    // }
     switch (motor->motor_serial)
     {
     case 0:
@@ -78,9 +67,4 @@ void Rotate(MOTOR *motor)
     default:
         break;
     }
-}
-
-int DistToEncoder(int dist)
-{
-    return 0;
 }

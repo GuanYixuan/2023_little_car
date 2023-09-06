@@ -1,4 +1,4 @@
-#include "pid.h"
+#include <pid.hpp>
 #include "main.h"
 
 void PID_Init(PID *pid, float Kp, float Ki, float Kd){

@@ -21,9 +21,12 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "pid.h"
-#include "motor.h"
-#include "move.h"
+#include "move.hpp"
+#include "motor.hpp"
+#include "pid.hpp"
+
+#include <stdlib.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -116,86 +119,6 @@ PUTCHAR_PROTOTYPE
 {
     HAL_UART_Transmit(&huart1 , (uint8_t *)&ch, 1, 0xFFFF);
     return ch;
-}
-
-//整形转字符，stm32不支持标准的itoa,这里自己实现
-char *myitoa(int value, char *string, int radix)
-{
-    int     i, d;
-    int     flag = 0;
-    char    *ptr = string;
-
-    /* This implementation only works for decimal numbers. */
-    if (radix != 10)
-    {
-        *ptr = 0;
-        return string;
-    }
-
-    if (!value)
-    {
-        *ptr++ = 0x30;
-        *ptr = 0;
-        return string;
-    }
-
-    /* if this is a negative value insert the minus sign. */
-    if (value < 0)
-    {
-        *ptr++ = '-';
-
-        /* Make the value positive. */
-        value *= -1;
-    }
-
-    for (i = 10000; i > 0; i /= 10)
-    {
-        d = value / i;
-
-        if (d || flag)
-        {
-            *ptr++ = (char)(d + 0x30);
-            value -= (d * i);
-            flag = 1;
-        }
-    }
-
-    /* Null terminate the string. */
-    *ptr = 0;
-
-    return string;
-
-} /* NCL_Itoa */
-
-//字符串转整形，stm32不支持标准的atoi,这里自己实现
-int myatoi(const char *str)
-{
-	int s=0;
-	uint8_t falg=0;
-
-	while(*str==' ')
-	{
-		str++;
-	}
-
-	if(*str=='-'||*str=='+')
-	{
-		if(*str=='-')
-		falg=1;
-		str++;
-	}
-
-	while(*str>='0'&&*str<='9')
-	{
-		s=s*10+*str-'0';
-		str++;
-		if(s<0)
-		{
-			s=2147483647;
-			break;
-		}
-	}
-	return s*(falg?-1:1);
 }
 
 /* USER CODE END 0 */
@@ -305,7 +228,7 @@ while (1)
    {
      Uart1_RxFlag = 0;
      Uart1_RxCnt = 0;
-     dist = atoi(Uart1_RxString);
+     dist = atoi((char*)Uart1_RxString);
    }
    forward(dist);
    dist = 0;
@@ -727,13 +650,6 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-int GetTimEncoder(int encoder_serial) {
-  static short i_encoder;
-  i_encoder = __HAL_TIM_GetCounter(MOTOR_TIMER_HANDLE_P[encoder_serial]);
-  __HAL_TIM_SetCounter(MOTOR_TIMER_HANDLE_P[encoder_serial], 0);
-	return i_encoder;
-}
-
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *UartHandle)
 {
 
@@ -742,7 +658,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *UartHandle)
     if (Uart1_RxCnt >= 19)
     {
       Uart1_RxCnt = 0;
-      HAL_UART_Transmit(&huart1, "数据溢出\r\n",sizeof("数据溢出\r\n"), 10);
+      HAL_UART_Transmit(&huart1, (uint8_t*)"数据溢出\r\n",sizeof("数据溢出\r\n"), 10);
       memset(Uart1_RxString, 0x00, sizeof(Uart1_RxString));
     }
     else
@@ -760,7 +676,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *UartHandle)
 
   else if (UartHandle->Instance == USART2)
   {
-    printf(Uart2_RxString);
+    printf((char*)Uart2_RxString);
     // HAL_UART_Transmit(&huart1, Uart2_RxString, 6, 10);
     memset(Uart2_RxString, 0x00, sizeof(Uart2_RxString));
     HAL_UART_Receive_IT(&huart2, Uart2_RxString, 6);
