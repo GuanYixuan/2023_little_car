@@ -61,34 +61,9 @@ UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-
-
-/*串口通讯测试*/
-uint8_t encoder_string[20];
-uint16_t i=0;
-uint8_t tim2_ccr1_string[20];
-
-int i_tim8_ccr_target[4];
-
-uint8_t Uart1_RxFlag = 0; //串口1接收标志
-uint8_t Uart1_RxBuffer; //串口1接收中断缓冲
-uint8_t Uart1_RxString[20]; //串口1接收字符
-uint8_t Uart1_RxCnt = 0; //串口1接收计数
-uint8_t Uart2_RxBuffer;
-uint8_t Uart2_RxString[20];
-int encoder_serial = 1;
-
 PID pid[4];
-int pid_update[4];
-
 MOTOR motor[4];
 TIM_HandleTypeDef* MOTOR_TIMER_HANDLE_P[4] = {&htim1, &htim2, &htim3, &htim4};
-
-
-int i_encoder_temp[4];
-int i_encoder_output[4];
-
-
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -226,9 +201,9 @@ int main(void)
   HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_3);
   HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_4);
 
-  /*串口中断接收初始�???*/
-  HAL_UART_Receive_IT(&huart1, &Uart1_RxBuffer, 1);
-  HAL_UART_Receive_IT(&huart2, Uart2_RxString, 6);
+  // UART初始化, 第一次需要手动调用中断
+  HAL_UART_RxCpltCallback(&PC_UART_HANDLE);
+  HAL_UART_RxCpltCallback(&OpenMV_UART_HANDLE);
 
   /*PID参数初始�???*/
   PID_Init(&pid[0], 0.6, 0.1, 0.13);
@@ -243,9 +218,7 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  // 第一次需要手动调用中断
-  HAL_UART_RxCpltCallback(&PC_UART_HANDLE);
-  HAL_UART_RxCpltCallback(&OpenMV_UART_HANDLE);
+
   // 主循环
   while (1) {
     if (!messages.empty()) {
@@ -260,11 +233,13 @@ int main(void)
         int16_t angle = *(int16_t*)(ins->data + 1);
         success = steer(angle);
         messages.wrap_append("%s: steer %hd\n", RETURN_MESSAGES[success], angle);
+        HAL_UART_Transmit(&OpenMV_UART_HANDLE, (uint8_t*)"EXECEND\n", 8, 1000);
       } else if (ins_type == 0x20) {
         int16_t forward = *(int16_t*)(ins->data + 1);
         int16_t shift_right = *(int16_t*)(ins->data + 3);
         success = shift(forward, shift_right);
         messages.wrap_append("%s: shift %hd %hd\n", RETURN_MESSAGES[success], forward, shift_right);
+        HAL_UART_Transmit(&OpenMV_UART_HANDLE, (uint8_t*)"EXECEND\n", 8, 1000);
       } else if (ins_type == 0x31) HAL_UART_Transmit(&PC_UART_HANDLE, &ins->data[1], INSTRUCTION_LENGTH - 1, 1000);
       else if (ins_type == 0x32) HAL_UART_Transmit(&OpenMV_UART_HANDLE, &ins->data[1], INSTRUCTION_LENGTH - 1, 1000);
       else messages.wrap_append("ILLEGAL INST 0x%02hx\n", ins_type);
@@ -276,19 +251,6 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
   }
-// while (1)
-//   {
-//     /* USER CODE END WHILE */
-//     /* USER CODE BEGIN 3 */
-//    if (Uart1_RxFlag != 0)
-//    {
-//      Uart1_RxFlag = 0;
-//      Uart1_RxCnt = 0;
-//      dist = atoi((char*)Uart1_RxString);
-//    }
-//    steer(dist);
-//    dist = 0;
-//   }
 //   /* USER CODE END 3 */
 }
 
@@ -654,7 +616,7 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
+  huart2.Init.BaudRate = 9600;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
@@ -706,36 +668,6 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-// void HAL_UART_RxCpltCallback(UART_HandleTypeDef *UartHandle)
-// {
-//   if (UartHandle->Instance == USART1)
-//   {
-//     if (Uart1_RxCnt >= 19)
-//     {
-//       Uart1_RxCnt = 0;
-//       HAL_UART_Transmit(&huart1, (uint8_t*)"数据溢出\r\n",sizeof("数据溢出\r\n"), 10);
-//       memset(Uart1_RxString, 0x00, sizeof(Uart1_RxString));
-//     }
-//     else
-//     {
-//       Uart1_RxString[Uart1_RxCnt++] = Uart1_RxBuffer;
-//       if (Uart1_RxString[Uart1_RxCnt - 1] == '\n')
-//       {
-//         Uart1_RxString[Uart1_RxCnt] = '\0';
-//         Uart1_RxFlag = 1;
-//         Uart1_RxCnt = 0;
-//       }
-//     }
-//     HAL_UART_Receive_IT(&huart1, &Uart1_RxBuffer, 1);
-//   }
-//   else if (UartHandle->Instance == USART2)
-//   {
-//     // printf((char*)Uart2_RxString);
-//     // HAL_UART_Transmit(&huart1, Uart2_RxString, 6, 10);
-//     memset(Uart2_RxString, 0x00, sizeof(Uart2_RxString));
-//     HAL_UART_Receive_IT(&huart2, Uart2_RxString, 6);
-//   }
-// }
 
 /* USER CODE END 4 */
 

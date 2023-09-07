@@ -14,19 +14,14 @@
 # define LENGTH_HALF 85
 # define WIDTH_HALF 95
 
-extern uint32_t PWM_channels[4];
-extern uint32_t TIM8_CCR[4];
 extern MOTOR motor[4];
-extern int i_encoder_temp[4];
-extern int i_encoder_output[4];
-extern int i_tim8_ccr_target[4];
-
 extern UART_HandleTypeDef huart1;
 
 extern PID pid[4];
 extern TIM_HandleTypeDef* MOTOR_TIMER_HANDLE_P[4];
 
 void my_printf(const char* format, ...) {
+    return;
     static uint8_t func_buffer[256];
 	va_list args;
 	va_start(args, format);
@@ -51,6 +46,10 @@ void Brake() {
 }
 
 bool forward(int16_t dist) {
+    static int i_encoder_temp[4];
+    static int i_encoder_output[4];
+    static int CCR_target[4];
+
     // 零距离平移 = 刹车
     if (dist == 0) {
         Brake();
@@ -77,7 +76,7 @@ bool forward(int16_t dist) {
         param_set_index = i;
         break;
     }
-    for (int i = 0; i < 4; i++) i_tim8_ccr_target[i] = FORWARD_PARAMS[param_set_index][i+1];
+    for (int i = 0; i < 4; i++) CCR_target[i] = FORWARD_PARAMS[param_set_index][i+1];
     // 计算真正的编码器目标
     int cnt_max = distToCnt(round(dist_positive + FORWARD_OFFSET[param_set_index]));
 
@@ -95,8 +94,8 @@ bool forward(int16_t dist) {
             // i_encoder_output[i] = i_encoder_temp[i] * 6000 * 1000 / (DT * 4 * 11 * REDUCTION_RATIO * 280); //?
             i_encoder_output[i] = i_encoder_temp[i] * 487.013 / DT / REDUCTION_RATIO;
             /*PID*/
-            PID_SetTarget(&pid[i], i_tim8_ccr_target[i]);
-            int adjusted_target = i_tim8_ccr_target[i] + PID_Update(&pid[i], i_encoder_output[i]);
+            PID_SetTarget(&pid[i], CCR_target[i]);
+            int adjusted_target = CCR_target[i] + PID_Update(&pid[i], i_encoder_output[i]);
             if (adjusted_target > 99) adjusted_target = 99;
             else if (adjusted_target < 0) adjusted_target = -adjusted_target;
             /*设置运动速度*/
@@ -113,48 +112,60 @@ bool forward(int16_t dist) {
     for (int i = 0; i < 4; i ++) {
         SetRotateSpeed(&motor[i], 0);
         Rotate(&motor[i]);
-        i_tim8_ccr_target[i] = 0;
     }
     return true;
 }
 
 bool right(int16_t dist) {
-    return true;
+    static int i_encoder_temp[4];
+    static int i_encoder_output[4];
+    static int CCR_target[4];
+
     // 零距离平移 = 刹车
     if (dist == 0) {
         Brake();
         return true;
     }
 
-    int cnt_max = 0;
-    int dist_positive = 0;
+    int dist_positive = abs(dist);
+    if (dist_positive <= SHIFT_RIGHT_MIN) dist_positive = 1; // 最小限制
     if (dist > 0) {
-        dist_positive = dist * RIGHT_RATIO;
         SetRotateDirection(&motor[0], 1);
         SetRotateDirection(&motor[1], -1);
         SetRotateDirection(&motor[2], 1);
         SetRotateDirection(&motor[3], -1);
-        cnt_max = distToCnt(dist_positive);
     } else if (dist < 0) {
-        dist_positive = - dist * RIGHT_RATIO;
         SetRotateDirection(&motor[0], -1);
         SetRotateDirection(&motor[1], 1);
         SetRotateDirection(&motor[2], -1);
         SetRotateDirection(&motor[3], 1);
-        cnt_max = distToCnt(dist_positive);
+    }
+
+    // 寻找合适的参数
+    int param_set_index = 0;
+    for (int i = SHIFT_RIGHT_PARAM_SET_COUNT - 1; i >= 0 ; i--) if (dist_positive >= SHIFT_RIGHT_PARAMS[i][0]) {
+        param_set_index = i;
+        break;
+    }
+    for (int i = 0; i < 4; i++) CCR_target[i] = SHIFT_RIGHT_PARAMS[param_set_index][i+1];
+    int cnt_max = distToCnt(round(dist_positive + SHIFT_RIGHT_OFFSET[param_set_index]));
+
+    // PID初始化
+    for (int i = 0; i < 4; i++) {
+        PID_Reset(&pid[i]);
+        __HAL_TIM_SetCounter(MOTOR_TIMER_HANDLE_P[i], 0);
     }
 
    for (int encoder_cnt = 0; encoder_cnt <= cnt_max; ) {
         for (int i = 0; i < 4; i ++) {
-            i_tim8_ccr_target[i] = 95;
             /*读取编码器*/
             i_encoder_temp[i] = GetTimEncoder(i);
             if (i_encoder_temp[i] < 0) i_encoder_temp[i] = - i_encoder_temp[i];
             // i_encoder_output[i] = i_encoder_temp[i] * 6000 * 1000 / DT / 4 / 11 / REDUCTION_RATIO / 280; //?
             i_encoder_output[i] = i_encoder_temp[i] * 487.013 / DT / REDUCTION_RATIO; //?
             /*PID*/
-            PID_SetTarget(&pid[i], i_tim8_ccr_target[i]);
-            int adjusted_target = i_tim8_ccr_target[i] + PID_Update(&pid[i], i_encoder_output[i]);
+            PID_SetTarget(&pid[i], CCR_target[i]);
+            int adjusted_target = CCR_target[i] + PID_Update(&pid[i], i_encoder_output[i]);
             if (adjusted_target > 99) adjusted_target = 99;
             else if (adjusted_target < 0) adjusted_target = -adjusted_target;
             /*设置运动速度*/
@@ -171,13 +182,16 @@ bool right(int16_t dist) {
     for (int i = 0; i < 4; i ++) {
         SetRotateSpeed(&motor[i], 0);
         Rotate(&motor[i]);
-        i_tim8_ccr_target[i] = 0;
     }
     return true;
 }
 
 #define STEER_DT 33
 bool steer(int16_t angle) {
+    static int i_encoder_temp[4];
+    static int i_encoder_output[4];
+    static int CCR_target[4];
+
     if (angle == 0) return true;
 
     int angle_positive = abs(angle);
@@ -200,7 +214,7 @@ bool steer(int16_t angle) {
         param_set_index = i;
         break;
     }
-    for (int i = 0; i < 4; i++) i_tim8_ccr_target[i] = STEER_PARAMS[param_set_index][i+1];
+    for (int i = 0; i < 4; i++) CCR_target[i] = STEER_PARAMS[param_set_index][i+1];
     // 计算真正的编码器目标
     int cnt_max = distToCnt(round((angle_positive + STEER_OFFSET[param_set_index]) * 3.1416 * (LENGTH_HALF + WIDTH_HALF) / 180));
 
@@ -218,8 +232,8 @@ bool steer(int16_t angle) {
             // i_encoder_output[i] = i_encoder_temp[i] * 6000 * 1000 / (STEER_DT * 4 * 11 * REDUCTION_RATIO * 280); //?
             i_encoder_output[i] = i_encoder_temp[i] * 487.013 / (STEER_DT * REDUCTION_RATIO); //?
             /*PID*/
-            PID_SetTarget(&pid[i], i_tim8_ccr_target[i]);
-            int adjusted_target = i_tim8_ccr_target[i] + PID_Update(&pid[i], i_encoder_output[i]);
+            PID_SetTarget(&pid[i], CCR_target[i]);
+            int adjusted_target = CCR_target[i] + PID_Update(&pid[i], i_encoder_output[i]);
             if (adjusted_target > 99) adjusted_target = 99;
             else if (adjusted_target < 0) adjusted_target = -adjusted_target;
             /*设置运动速度*/
@@ -236,7 +250,6 @@ bool steer(int16_t angle) {
     for (int i = 0; i < 4; i ++) {
         SetRotateSpeed(&motor[i], 0);
         Rotate(&motor[i]);
-        i_tim8_ccr_target[i] = 0;
     }
     return true;
 }
@@ -246,7 +259,6 @@ bool shift(int16_t _forward, int16_t shift_right) {
     return ret && right(shift_right);
 }
 
-int distToCnt(int16_t dist)
-{
+int distToCnt(int16_t dist) {
     return dist * 4 * 11 * REDUCTION_RATIO / (60 * 3.14);
 }

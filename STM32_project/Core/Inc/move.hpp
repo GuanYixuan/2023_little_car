@@ -18,6 +18,21 @@ constexpr int FORWARD_PARAMS[FORWARD_PARAM_SET_COUNT][5] = {
 // 不同距离前进指令所加的距离调整系数
 constexpr float FORWARD_OFFSET[FORWARD_PARAM_SET_COUNT] = {0, -30, -60, -100, -230};
 
+// 右移指令参数组数
+constexpr int SHIFT_RIGHT_PARAM_SET_COUNT = 5;
+// 右移指令的最短距离, 小于等于此值则会被设置为1
+constexpr int SHIFT_RIGHT_MIN = 10;
+// 不同距离右移指令所用的参数, 格式是(min_dist, 四个_ccr_target)
+constexpr int SHIFT_RIGHT_PARAMS[SHIFT_RIGHT_PARAM_SET_COUNT][5] = {
+    {0, 20, 20, 21, 20},
+    {40, 20, 20, 20, 21},
+    {120, 30, 30, 31, 30},
+    {500, 50, 50, 51, 50},
+    {1000, 80, 81, 81, 80}
+};
+// 不同距离右移指令所加的距离调整系数
+constexpr float SHIFT_RIGHT_OFFSET[SHIFT_RIGHT_PARAM_SET_COUNT] = {0, -30, -40, -60, -100};
+
 // 转弯指令参数组数
 constexpr int STEER_PARAM_SET_COUNT = 3;
 // 转弯指令的最小转角, 小于等于此值则会被设置为1
