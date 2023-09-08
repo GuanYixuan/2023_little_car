@@ -25,22 +25,21 @@ from communication import GRAB_SUCCESS_CONTENT, PLACE_SUCCESS_CONTENT
 from camera.utils import Point
 from camera.camera import Camera, Camera_message
 import camera.constants as CC # camera constants
+import constants as AC # algorithm constants
 
 # 类型注释系列import
 from typing import Optional, Literal
 from numpy.typing import NDArray
 
 BAUDRATE: int = 9600
-SERIAL_NAME: str = "COM9"
+SERIAL_NAME: str = "COM7"
 
-STEER_STEP_LENGTH: int = 20
-SHIFT_STEP_LENGTH: int = 30
+STEER_STEP_LENGTH: int = 30
+SHIFT_STEP_LENGTH: int = 250
 
 COMMAND_COLOR: int = 0x000000
 SUCCESS_COLOR: int = 0x009000
 FAILED_COLOR: int = 0xa00000
-
-ITEM_COLLIDE_THRESH: float = 0.2
 
 def camera_process(cond: Optional[Condition] = None, queue: Optional[Queue] = None) -> None:
     cam = Camera(cond=cond, queue=queue)
@@ -67,6 +66,7 @@ class Control_panel(QMainWindow, Ui_MainWindow):
 
     alg_running: bool
     alg_start_time: float
+    alg_status_update_signal = pyqtSignal(str)
     main_algorithm_thread: threading.Thread
     """主算法线程"""
 
@@ -115,35 +115,45 @@ class Control_panel(QMainWindow, Ui_MainWindow):
     # 左侧指令面板
     def __steer_button(self) -> None:
         """`转向`按钮的逻辑"""
+        self.__log_once("发送转向指令", COMMAND_COLOR)
         self.stm32_serial.inst_steer(int(self.steer_angle.text()))
     def __shift_button(self) -> None:
         """`平移`按钮的逻辑"""
+        self.__log_once("发送平移指令", COMMAND_COLOR)
         self.stm32_serial.inst_shift(int(self.shift_forward.text()), int(self.shift_shift.text()))
     def __enter_grab_button(self) -> None:
         """`进入抓取状态`按钮的逻辑"""
+        self.__log_once("遥控: 进入抓取状态", COMMAND_COLOR)
         self.stm32_serial.inst_grab_mode()
     def __enter_place_button(self) -> None:
         """`进入放置状态`按钮的逻辑"""
+        self.__log_once("遥控: 进入放置状态", COMMAND_COLOR)
         self.stm32_serial.inst_place_mode()
 
     # 右侧指令面板
     def __forward_button(self) -> None:
         """`↑`按钮"""
+        self.__log_once("遥控: 前进", COMMAND_COLOR)
         self.stm32_serial.inst_shift(SHIFT_STEP_LENGTH, 0)
     def __backward_button(self) -> None:
         """`↓`按钮"""
+        self.__log_once("遥控: 后退", COMMAND_COLOR)
         self.stm32_serial.inst_shift(-SHIFT_STEP_LENGTH, 0)
     def __left_shift_button(self) -> None:
         """`←`按钮"""
+        self.__log_once("遥控: 左移", COMMAND_COLOR)
         self.stm32_serial.inst_shift(0, -SHIFT_STEP_LENGTH)
     def __right_shift_button(self) -> None:
         """`→`按钮"""
+        self.__log_once("遥控: 右移", COMMAND_COLOR)
         self.stm32_serial.inst_shift(0, SHIFT_STEP_LENGTH)
     def __turn_left_button(self) -> None:
         """`左转`按钮"""
+        self.__log_once("遥控: 左转", COMMAND_COLOR)
         self.stm32_serial.inst_steer(STEER_STEP_LENGTH)
     def __turn_right_button(self) -> None:
         """`右转`按钮"""
+        self.__log_once("遥控: 右转", COMMAND_COLOR)
         self.stm32_serial.inst_steer(-STEER_STEP_LENGTH)
 
     # log_panel
@@ -179,9 +189,9 @@ class Control_panel(QMainWindow, Ui_MainWindow):
             message = self.stm32_serial.message_queue.pop(0).decode()
 
             # 按不同颜色添加log
-            if "FAIL" in message:
+            if ("FAIL" in message.upper()) or ("ILLEAGAL" in message.upper()):
                 self.__log_once(message, FAILED_COLOR)
-            elif "SUCCESS" in message:
+            elif "SUCCESS" in message.upper():
                 self.__log_once(message, SUCCESS_COLOR)
             else:
                 self.__log_once(message, 0)
@@ -230,6 +240,8 @@ class Control_panel(QMainWindow, Ui_MainWindow):
         self.main_algorithm_thread.join()
         self.activate_algorithm_button.setEnabled(True)
         self.deactivate_algorithm_button.setEnabled(False)
+    def __alg_status_updater(self, msg: str) -> None:
+        self.label_alg_step_display.setText(msg)
 
     def __connect_logic(self) -> None:
         # 左侧指令面板
@@ -271,6 +283,7 @@ class Control_panel(QMainWindow, Ui_MainWindow):
         # 主算法
         self.activate_algorithm_button.clicked.connect(self.__activate_algorithm)
         self.deactivate_algorithm_button.clicked.connect(self.__deactivate_algorithm)
+        self.alg_status_update_signal.connect(self.__alg_status_updater)
 
     # 暂且寄生在control panel下的主算法
     def __main_algorithm(self) -> None:
@@ -284,13 +297,15 @@ class Control_panel(QMainWindow, Ui_MainWindow):
             closest_id: int = -1
             closest_length: float = 1e9
             for ind, item in enumerate(camera_message.item_list):
+                if item.in_base == CC.HOME_NAME: # 不抓家里的
+                    continue
                 collide: bool = False
                 for other_ind, other in enumerate(camera_message.item_list):
                     if ind == other_ind:
                         continue
                     d1 = other.real_coord.dist_to_segment(car_pos, item.real_coord) # 小车->物块
                     d2 = other.real_coord.dist_to_segment(item.real_coord, CC.HOME_POS) # 物块->终点
-                    if d1 < ITEM_COLLIDE_THRESH or d2 < ITEM_COLLIDE_THRESH:
+                    if d1 < AC.NAV_ITEM_COLLIDE_THRESH or d2 < AC.NAV_ITEM_COLLIDE_THRESH:
                         collide = True
                         break
                 if not collide:
@@ -306,24 +321,27 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                 self.__log_once("[主算法] 向目标%s移动" % str(camera_message.item_list[closest_id].real_coord), COMMAND_COLOR)
 
             # 导航过去
-            self.label_alg_step_display.setText("接近物块")
-            self.__navigate_to(camera_message.item_list[closest_id].real_coord, 0.2, math.radians(20))
+            self.alg_status_update_signal.emit("接近物块")
+            self.__navigate_to(camera_message.item_list[closest_id].real_coord, 0.35, math.radians(5))
 
-            self.label_alg_step_display.setText("拾取物块")
+            self.alg_status_update_signal.emit("拾取物块")
             self.__log_once("[主算法] 进入抓取模式", COMMAND_COLOR)
             self.stm32_serial.inst_grab_mode()
-            if not self.__wait_for_result("grab"):
-                continue
+            # if not self.__wait_for_result("grab"):
+            #     continue
+            input("确认指令:")
 
             # 导航回家
-            self.label_alg_step_display.setText("返回目标区")
-            self.__navigate_to(CC.HOME_POS, 0.3, math.radians(45))
+            self.alg_status_update_signal.emit("返回目标区")
+            self.__log_once("[主算法] 返回目标区", COMMAND_COLOR)
+            self.__navigate_to(CC.HOME_POS, 0.3, math.radians(30))
 
-            self.label_alg_step_display.setText("放置物块")
+            self.alg_status_update_signal.emit("放置物块")
             self.__log_once("[主算法] 进入放置模式", COMMAND_COLOR)
             self.stm32_serial.inst_place_mode()
-            if not self.__wait_for_result("place"):
-                continue
+            # if not self.__wait_for_result("place"):
+            #     continue
+            input("确认指令:")
 
             self.__log_once("[主算法] 放置成功", COMMAND_COLOR)
             collected_blocks += 1
@@ -331,41 +349,64 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                 break
     def __wait_for_result(self, command_type: Literal["grab", "place", "shift", "steer"]) -> bool:
         """阻塞式地等待指令的结果"""
+        ret: bool = True
         while True:
             message = self.__alg_message_queue.get().decode()
             if (command_type == "shift" or command_type == "steer") and message.startswith("SUCCESS: %s" % command_type):
-                return True
+                break
             if len(message) != STM32_INSTRUCTION_LENGTH - 2:
                 continue
             if message.startswith("GR") and command_type == "grab":
-                return message == GRAB_SUCCESS_CONTENT
+                ret = (message == GRAB_SUCCESS_CONTENT)
+                break
             if message.startswith("PL") and command_type == "place":
-                return message == PLACE_SUCCESS_CONTENT
+                ret = (message == PLACE_SUCCESS_CONTENT)
+                break
+        time.sleep(AC.WAIT_SUCC_DELAY)
+        wait_time = time.monotonic()
+        while self.camera_message.car_last_update < wait_time:
+            with self.camera_cond:
+                self.camera_cond.wait()
+        return ret
     def __navigate_to(self, target_pos: Point, dist_thresh: float, angle_thresh: float) -> None:
         """导航至某位置, 该函数在小车到位后才会返回"""
         while True:
             camera_message: Camera_message = deepcopy(self.camera_message)
             car_pos: Point = camera_message.car_pose[0]
-            target_distance = car_pos.dist_to_point(target_pos)
-            target_angle_diff = Point.angle_between(camera_message.car_pose[1], car_pos.angle_to(target_pos))
+            target_distance: float = car_pos.dist_to_point(target_pos)
+            target_angle: float = car_pos.angle_to(target_pos)
+            target_angle_diff: int = round(math.degrees(Point.angle_between(camera_message.car_pose[1], target_angle)))
 
             # 完成条件
             if target_distance < dist_thresh and Point.angle_like(camera_message.car_pose[1], car_pos.angle_to(target_pos), angle_thresh):
                 break
-            elif target_distance < dist_thresh: # 距离在范围内, 只需旋转
-                self.stm32_serial.inst_steer(round(math.degrees(target_angle_diff)))
+            elif abs(target_angle_diff) > 5: # 先转角
+                input("确认指令: 旋转%d" % target_angle_diff)
+                self.stm32_serial.inst_steer(target_angle_diff)
                 self.__wait_for_result("steer")
-            else: # 距离也不在范围内
-                # 先转过去
-                self.stm32_serial.inst_steer(round(math.degrees(target_angle_diff)))
-                self.__wait_for_result("steer")
-                # 再前进
-                self.stm32_serial.inst_shift(round((target_distance - dist_thresh) * 1000), 0)
+            else: # 只需前进
+                limited_dist = target_distance - dist_thresh
+                limited_dist = min(limited_dist, AC.NAV_MAX_FORWARD)
+                limited_dist = min(limited_dist, self.__check_wall_collision_dist(car_pos, target_angle) - AC.NAV_ARM_LENGTH - AC.NAV_WALL_COLLIDE_THRESH)
+                limited_dist = round(limited_dist * 1000)
+
+                input("确认指令: 前进%d" % limited_dist)
+                self.stm32_serial.inst_shift(limited_dist, 0)
                 self.__wait_for_result("shift")
+    @staticmethod
+    def __check_wall_collision_dist(curr_pos: Point, angle: float) -> float:
+        ret: float = 1e9
+        right_bound: float = (CC.FIELD_SIZE[0] - curr_pos.x) / math.cos(angle)
+        left_bound: float = (-curr_pos.x) / math.cos(angle)
+        upper_bound: float = (CC.FIELD_SIZE[1] - curr_pos.y) / math.sin(angle)
+        lower_bound: float = (-curr_pos.y) / math.sin(angle)
+        for item in (right_bound, left_bound, upper_bound, lower_bound):
+            ret = ret if item < 0 else min(ret, item)
+        return ret
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    win = Control_panel(no_STM=True, no_camera=False)
+    win = Control_panel(no_STM=False, no_camera=False)
     win.show()
 
     app.exec()

@@ -107,10 +107,10 @@ class Serial_handler:
         self.instruction_queue.append(bytes([0x32]) + content)
     def inst_grab_mode(self) -> None:
         """非阻塞地向小车发送'进入抓取状态'指令"""
-        # TODO
+        self.inst_to_OpenMV("GRASP \n".encode())
     def inst_place_mode(self) -> None:
         """非阻塞地向小车发送'进入放置状态'指令"""
-        # TODO
+        self.inst_to_OpenMV("PLACE \n".encode())
 
     def ping_STM32(self, timeout: float) -> float:
         """阻塞式地ping STM32, 返回延迟时间"""
