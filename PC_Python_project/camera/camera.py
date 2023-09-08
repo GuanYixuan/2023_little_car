@@ -51,11 +51,20 @@ class Item:
     bind: int
     """与这个物品'粘合'的物品index, -1表示未粘合"""
 
+    in_base: str
+    """物品所在的基地名称, 为空则表示不在基地中"""
+
     def __init__(self, _pixel_pos: Point, color: str, _index: int) -> None:
         self.pixel_pos = _pixel_pos
         self.color = color
         self.index = _index
         self.bind = -1
+
+        self.in_base = ""
+        for home_name in CC.HOME_RANGE:
+            if self.real_coord.in_range(*CC.HOME_RANGE[home_name]):
+                self.in_base = home_name
+                break
 
     @property
     def real_coord(self) -> Point:
@@ -105,12 +114,14 @@ class Camera:
     """小车位姿, 表示为(真实坐标, 指向角)"""
     car_last_update: float
     """最后一次看见小车的时间, 采用time.monotonic()"""
+    car_mask: NDArray[np.uint8]
+    """被认定是小车的区域"""
 
     image_rgb: NDArray[np.uint8]
     """当前最新的图片, 已去畸变"""
     image_gray: NDArray
     """灰度化后的最新图片, 已去畸变"""
-    transformed_rgb: NDArray[np.uint8]
+    transformed_rgb: NDArray
     """变换后的最新图片, 已去畸变"""
     rendered_picture: NDArray[np.uint8]
     """叠加显示了各元素的图像"""
@@ -162,7 +173,7 @@ class Camera:
         cv2.waitKey(-1)
 
         # 生成变换矩阵
-        corner_list = [(134, 728), (1056, 839), (1046, 69), (311, 272)]
+        corner_list = [(90, 625), (1149, 959), (1225, 35), (319, 137)]
         assert len(corner_list) == 4
         self.transform_to_top = cv2.getPerspectiveTransform(np.array(corner_list, dtype=np.float32),
                                             np.array([(0, CC.TRANSFORMED_HEIGHT), (CC.TRANSFORMED_WIDTH, CC.TRANSFORMED_HEIGHT), (CC.TRANSFORMED_WIDTH, 0), (0, 0)], dtype=np.float32))
@@ -222,6 +233,13 @@ class Camera:
             return np.round(product).astype(np.int32)
         else:
             return product
+
+    @staticmethod
+    def pixel_to_coord(inp: Point) -> Point:
+        return Point(inp.x, CC.TRANSFORMED_HEIGHT - inp.y) * (CC.FIELD_SIZE[0] / CC.TRANSFORMED_WIDTH)
+    @staticmethod
+    def coord_to_pixel(inp: Point) -> Point:
+        return Point(inp.x * (CC.TRANSFORMED_WIDTH / CC.FIELD_SIZE[0]), CC.TRANSFORMED_HEIGHT - inp.y * (CC.TRANSFORMED_WIDTH / CC.FIELD_SIZE[0]))
 
     def refresh_image(self, init: bool = False) -> None:
         """阻塞式地刷新图片"""
@@ -310,7 +328,9 @@ class Camera:
         # 模糊后进行颜色筛选
         blurred = cv2.cvtColor(cv2.GaussianBlur(self.image_rgb, (CC.GAUSS_BLUR_KSIZE, CC.GAUSS_BLUR_KSIZE), CC.GAUSS_BLUR_KSIZE/3), cv2.COLOR_BGR2HSV)
         for color in CC.BLOCK_HSV_LOWERBOUND:
-            block_mask = cv2.inRange(blurred, CC.BLOCK_HSV_LOWERBOUND[color], CC.BLOCK_HSV_UPPERBOUND[color]) # type: ignore
+            block_mask = np.zeros_like(self.image_gray)
+            for lbound, ubound in zip(CC.BLOCK_HSV_LOWERBOUND[color], CC.BLOCK_HSV_UPPERBOUND[color]):
+                block_mask |= cv2.inRange(blurred, lbound, ubound) # type: ignore
 
             # 分离轮廓
             raw_contours, _unused = cv2.findContours(block_mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
@@ -326,15 +346,21 @@ class Camera:
                 bottom_position: Tuple[int, int] = (pixels[1][bottom_ind], pixels[0][bottom_ind])
                 transformed_position = self.transform_points(bottom_position, True)
 
-                # 生成列表
-                if Point(*transformed_position).in_range((-CC.BLOCK_OUTLIER_THRESH, CC.TRANSFORMED_WIDTH+CC.BLOCK_OUTLIER_THRESH),
-                                                        (-CC.BLOCK_OUTLIER_THRESH, CC.TRANSFORMED_HEIGHT+CC.BLOCK_OUTLIER_THRESH)):
+                # 边界校验
+                point = Point(*transformed_position)
+                if not self.pixel_to_coord(point).in_range((-CC.BLOCK_OUTLIER_THRESH, CC.FIELD_SIZE[0]+CC.BLOCK_OUTLIER_THRESH),
+                                                           (-CC.BLOCK_OUTLIER_THRESH, CC.FIELD_SIZE[1]+CC.BLOCK_OUTLIER_THRESH)):
+                    continue
+
+                # 利用car_mask排除
+                if (not point.in_range((0, CC.TRANSFORMED_WIDTH), (0, CC.TRANSFORMED_HEIGHT))) or self.car_mask[point[1], point[0]] == 0:
                     ret.append(Item(Point(*transformed_position), color, -1))
 
         return ret
 
     def __estimate_car_pose(self) -> None:
         """根据图片更新小车位姿"""
+        # 先尝试在原始图里面找
         dets = self.tag_detector.detect(self.image_gray, True, CC.CAMERA_PARAMS, CC.TAG_SIZE)
 
         tag_found: bool = False
@@ -350,26 +376,49 @@ class Camera:
             # 提取平面的小车位姿
             weird_axes: bool = abs(tag_pose[2, 2]) < abs(tag_pose[1, 2]) # 假如旋转矩阵的三个轴排列方式比较奇怪
             self.car_last_update = time.monotonic()
-            self.car_pose = (Point(*utils.pose_translation(tag_pose)[:2]), math.atan2(tag_pose[2, 0] if weird_axes else tag_pose[1, 0], tag_pose[0, 0]))
             if weird_axes:
                 print(weird_axes, self.car_pose[1])
+            else:
+                self.car_pose = (Point(*utils.pose_translation(tag_pose)[:2]), math.atan2(tag_pose[2, 0] if weird_axes else tag_pose[1, 0], tag_pose[0, 0]))
 
+    def __estimate_other_cars(self) -> None:
+        """通过排除背景而识别其它小车(以及其它同学)"""
+        # 在变换后的图片上识别
+        blurred = cv2.cvtColor(cv2.GaussianBlur(self.transformed_rgb, (CC.GAUSS_BLUR_KSIZE, CC.GAUSS_BLUR_KSIZE), CC.GAUSS_BLUR_KSIZE/3), cv2.COLOR_BGR2HSV)
+        threshed: NDArray[np.uint8] = np.ones(blurred.shape[:2], dtype=np.uint8) # 一开始全屏都是小车
+        # 随后反选背景
+        for lbound, ubound in CC.CAR_COLOR_THRESH:
+            threshed &= (~cv2.inRange(blurred, lbound, ubound)) # type: ignore
+        # 筛掉边框
+        mask = np.zeros_like(threshed, dtype=np.uint8)
+        mask[CC.CAR_BORDER_WIDTH:threshed.shape[0]-CC.CAR_BORDER_WIDTH, CC.CAR_BORDER_WIDTH:threshed.shape[1]-CC.CAR_BORDER_WIDTH] = 255
+        threshed = mask & threshed
+        # cv2.imshow("threshed", threshed * 255), cv2.waitKey(1) # debug区
+        # 做一些形态学变换
+        threshed = cv2.erode(threshed, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (CC.CAR_ERODE_KSIZE, CC.CAR_ERODE_KSIZE))) * 255
+        # 提取轮廓
+        self.car_mask = np.zeros_like(threshed)
+        raw_contours, _unused = cv2.findContours(threshed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for ind, contour in enumerate(raw_contours):
+            area = cv2.contourArea(contour)
+            if area >= CC.CAR_SIZE_THRESH: # 按大小筛选
+                threshed = cv2.drawContours(threshed, raw_contours, ind, (128,), 3)
+                threshed = cv2.putText(threshed, str(area), contour[0][0], cv2.FONT_HERSHEY_COMPLEX, 0.5, (128, ))
+                self.car_mask = cv2.drawContours(self.car_mask, raw_contours, ind, (255,), -1)
+        # 再膨胀回来
+        self.car_mask = cv2.dilate(self.car_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (CC.CAR_DILATE_KSIZE, CC.CAR_DILATE_KSIZE)))
     def main_loop(self) -> None:
         """场外相机主循环"""
         while self.running:
             loop_start = time.monotonic()
 
             self.refresh_image()
+            self.__estimate_other_cars()
             self.__refresh_items()
             self.__estimate_car_pose()
 
-            # 绘制场地
             self.rendered_picture = np.copy(self.transformed_rgb)
             scale_factor: float = CC.FIELD_SIZE[0] / CC.TRANSFORMED_WIDTH
-            cv2.circle(self.rendered_picture, round(CC.HOME_POS / scale_factor), 6, CC.HOME_DISPLAY_COLOR, -1)
-            if isinstance(CC.ENEMY_HOME_POS, Point):
-                cv2.circle(self.rendered_picture, round(CC.ENEMY_HOME_POS / scale_factor), 6, CC.ENEMY_HOME_DISPLAY_COLOR, -1)
-
             # 绘制物品坐标
             for item in self.item_list:
                 disp_color = CC.BLOCK_COMBINED_COLOR if item.bind >= 0 else CC.BLOCK_DISPLAY_COLOR
@@ -378,6 +427,17 @@ class Camera:
                 cv2.circle(self.rendered_picture, round(item.pixel_pos + disp_nudge), 2, disp_color, -1)
                 out_str = "%d (%.2f, %.2f)" % (item.index, *item.real_coord)
                 cv2.putText(self.rendered_picture, out_str, round(item.pixel_pos + disp_nudge), cv2.FONT_HERSHEY_COMPLEX, 0.5, disp_color)
+
+            # 绘制场地
+            home_render_pix = round(self.coord_to_pixel(CC.HOME_POS))
+            cv2.circle(self.rendered_picture, home_render_pix, 6, CC.HOME_DISPLAY_COLOR, -1)
+            cv2.putText(self.rendered_picture, " (%d)" % np.count_nonzero([it.in_base == CC.HOME_NAME for it in self.item_list]),
+                        home_render_pix, cv2.FONT_HERSHEY_COMPLEX, 0.5, CC.HOME_DISPLAY_COLOR)
+            if isinstance(CC.ENEMY_HOME_POS, Point):
+                home_render_pix = round(self.coord_to_pixel(CC.ENEMY_HOME_POS))
+                cv2.circle(self.rendered_picture, home_render_pix, 6, CC.ENEMY_HOME_DISPLAY_COLOR, -1)
+                cv2.putText(self.rendered_picture, " (%d)" % np.count_nonzero([it.in_base == CC.ENEMY_HOME_NAME for it in self.item_list]),
+                        home_render_pix, cv2.FONT_HERSHEY_COMPLEX, 0.5, CC.ENEMY_HOME_DISPLAY_COLOR)
 
             # 绘制小车位置与方向
             if hasattr(self, "car_pose"):
@@ -402,23 +462,24 @@ class Camera:
                     self.render_condition.notify_all()
 
             # 如有需要, 直接显示图像
+            cv2.imshow("whole", self.image_rgb)
+            cv2.imshow("car", self.car_mask)
             if self.show_render:
                 cv2.imshow("field", self.rendered_picture)
-                cv2.imshow("whole", self.image_rgb)
-                # 附加一个截图功能和退出功能
-                key = (cv2.waitKey(1) & 0xFF)
-                if key == ord('c'):
-                    cv2.imwrite("captures/%s.jpg" % time.strftime("%m_%d_%H_%M_%S"), self.image_rgb)
-                elif key == ord('q'):
-                    cv2.destroyAllWindows()
-                    self.running = False
-                    del self.camera
+            # 附加一个截图功能和退出功能
+            key = (cv2.waitKey(1) & 0xFF)
+            if key == ord('c'):
+                cv2.imwrite("captures/%s.jpg" % time.strftime("%m_%d_%H_%M_%S"), self.image_rgb)
+            elif key == ord('q'):
+                cv2.destroyAllWindows()
+                self.running = False
+                del self.camera
 
             # 休眠一段时间
             loop_time = time.monotonic() - loop_start
             if loop_time < CC.TARGET_UPDATE_PERIOD:
                 time.sleep(CC.TARGET_UPDATE_PERIOD - loop_time)
-            print("Main Loop: %.3f" % (time.monotonic() - loop_start))
+            # print("Main Loop: %.3f, items: %s" % ((time.monotonic() - loop_start), str([it.color for it in self.item_list])))
 
 if __name__ == "__main__":
     cam = Camera(show_render=True)
