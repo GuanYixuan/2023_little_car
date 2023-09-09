@@ -303,13 +303,13 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                 for other_ind, other in enumerate(camera_message.item_list):
                     if ind == other_ind:
                         continue
-                    d1 = other.real_coord.dist_to_segment(car_pos, item.real_coord) # 小车->物块
-                    d2 = other.real_coord.dist_to_segment(item.real_coord, CC.HOME_POS) # 物块->终点
+                    d1 = other.coord.dist_to_segment(car_pos, item.coord) # 小车->物块
+                    d2 = other.coord.dist_to_segment(item.coord, CC.HOME_POS) # 物块->终点
                     if d1 < AC.NAV_ITEM_COLLIDE_THRESH or d2 < AC.NAV_ITEM_COLLIDE_THRESH:
                         collide = True
                         break
                 if not collide:
-                    path_length: float = item.real_coord.dist_to_point(car_pos) + item.real_coord.dist_to_point(CC.HOME_POS)
+                    path_length: float = item.coord.dist_to_point(car_pos) + item.coord.dist_to_point(CC.HOME_POS)
                     if path_length < closest_length:
                         closest_id = ind
                         closest_length = path_length
@@ -318,11 +318,11 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                 self.__log_once("[主算法] 未找到有效目标", COMMAND_COLOR)
                 continue
             else:
-                self.__log_once("[主算法] 向目标%s移动" % str(camera_message.item_list[closest_id].real_coord), COMMAND_COLOR)
+                self.__log_once("[主算法] 向目标%s移动" % str(camera_message.item_list[closest_id].coord), COMMAND_COLOR)
 
             # 导航过去
             self.alg_status_update_signal.emit("接近物块")
-            self.__navigate_to(camera_message.item_list[closest_id].real_coord, 0.35, math.radians(5))
+            self.__navigate_to(camera_message.item_list[closest_id].coord, 0.35, math.radians(5))
 
             self.alg_status_update_signal.emit("拾取物块")
             self.__log_once("[主算法] 进入抓取模式", COMMAND_COLOR)

@@ -24,10 +24,12 @@ import matplotlib.pyplot as plt
 if __name__ == '__main__':
     import utils
     import constants as CC
+    from constants import Item_state
     from utils import Point, Realtime_camera
 else:
     from . import utils
     from . import constants as CC # camera_constants
+    from .constants import Item_state
     from .utils import Point, Realtime_camera
 
 # 类型注释系列import
@@ -42,40 +44,45 @@ else:
 class Item:
     """刻画场地中的一个物品"""
 
-    pixel_pos: Point
-    """物品在俯视图中的 *像素坐标* """
     index: int
     """物品编号, 用于物品追踪"""
-    color: str
+    state: Item_state
+    """物品状态"""
+    color: CC.Block_color_name
+    """物品颜色"""
+    coord: Point
+    """物品在场地坐标系下的真实坐标"""
 
     bind: int
-    """与这个物品'粘合'的物品index, -1表示未粘合"""
-
-    in_base: str
+    """与这个物品'粘合'的物品index, 在`state`为`BOUND`时有效"""
+    in_base: Literal[CC.Home_names, ""]
     """物品所在的基地名称, 为空则表示不在基地中"""
+    on_car: int
+    """物品所在的车辆(暂时不知如何刻画), 在`state`为`ON_CAR`时有效"""
 
-    def __init__(self, _pixel_pos: Point, color: str, _index: int) -> None:
-        self.pixel_pos = _pixel_pos
+    def __init__(self, index: int, state: Item_state, color: CC.Block_color_name, coord: Point) -> None:
+        self.index = index
+        self.state = state
         self.color = color
-        self.index = _index
-        self.bind = -1
+        self.coord = coord
 
+        self.bind = -1
         self.in_base = ""
         for home_name in CC.HOME_RANGE:
-            if self.real_coord.in_range(*CC.HOME_RANGE[home_name]):
+            if self.coord.in_range(*CC.HOME_RANGE[home_name]):
                 self.in_base = home_name
                 break
 
     @property
-    def real_coord(self) -> Point:
-        """物品在场地坐标系下真实坐标"""
-        return Point(self.pixel_pos.x, CC.TRANSFORMED_HEIGHT - self.pixel_pos.y) * (CC.FIELD_SIZE[0] / CC.TRANSFORMED_WIDTH)
+    def pixel_pos(self) -> Point:
+        """物品在俯视图中的 *像素坐标* """
+        return Point(self.coord.x * (CC.TRANSFORMED_WIDTH / CC.FIELD_SIZE[0]), CC.TRANSFORMED_HEIGHT - self.coord.y * (CC.TRANSFORMED_WIDTH / CC.FIELD_SIZE[0]))
 
 class Camera_message:
     """场外相机类回传的消息"""
 
     timestamp: float
-    """消息生成的时间戳"""
+    """生成该消息所用照片的接收时间戳"""
 
     enemy_home_pos: Point
     """对方目标区域位置"""
@@ -90,8 +97,8 @@ class Camera_message:
     rendered_picture: NDArray[np.uint8]
     """叠加显示了各元素的图像"""
 
-    def __init__(self) -> None:
-        self.timestamp = time.monotonic()
+    def __init__(self, _timestamp: float) -> None:
+        self.timestamp = _timestamp
 
 class Camera:
     """场外相机主类"""
@@ -115,7 +122,9 @@ class Camera:
     car_last_update: float
     """最后一次看见小车的时间, 采用time.monotonic()"""
     car_mask: NDArray[np.uint8]
-    """被认定是小车的区域"""
+    """被认定为小车的区域"""
+    car_near_mask: NDArray[np.uint8]
+    """被认定为"接近小车"的区域"""
 
     image_rgb: NDArray[np.uint8]
     """当前最新的图片, 已去畸变"""
@@ -173,7 +182,7 @@ class Camera:
         cv2.waitKey(-1)
 
         # 生成变换矩阵
-        corner_list = [(90, 625), (1149, 959), (1225, 35), (319, 137)]
+        corner_list = [(53, 589), (1098, 941), (1206, 47), (307, 105)]
         assert len(corner_list) == 4
         self.transform_to_top = cv2.getPerspectiveTransform(np.array(corner_list, dtype=np.float32),
                                             np.array([(0, CC.TRANSFORMED_HEIGHT), (CC.TRANSFORMED_WIDTH, CC.TRANSFORMED_HEIGHT), (CC.TRANSFORMED_WIDTH, 0), (0, 0)], dtype=np.float32))
@@ -260,64 +269,88 @@ class Camera:
         self.transformed_rgb = cv2.warpPerspective(self.image_rgb, self.transform_to_top, dsize=(CC.TRANSFORMED_WIDTH, CC.TRANSFORMED_HEIGHT))
 
     def __refresh_items(self):
-        """更新物品位置"""
+        """更新物品位置, 并执行物品状态的转换"""
         new_list = self.__find_items()
         merged_list: List[Item] = []
+        old_used: NDArray = np.zeros(len(self.item_list))
+        new_used: NDArray = np.zeros(len(new_list))
 
-        # 创建连边列表 Tuple[旧index, 新index, distance]
+        # 创建连边列表 Tuple[旧index, 新index, distance], 准备就近匹配
         edges: List[Tuple[int, int, float]] = []
         for old_index, old_item in enumerate(self.item_list):
-            if old_item.bind >= 0: # bind的物体不连边
+            if (not old_item.state == Item_state.VISIBLE) and (not old_item.state == Item_state.INVISIBLE): # 仅有"可见"和"不可见"的物体参与连边
                 continue
             for new_index, new_item in enumerate(new_list):
                 if new_item.color != old_item.color: # 不同色的物体不连边
                     continue
-                edges.append((old_index, new_index, old_item.real_coord.dist_to_point(new_list[new_index].real_coord)))
+                edges.append((old_index, new_index, old_item.coord.dist_to_point(new_list[new_index].coord)))
 
-        # 按距离排序并建立对应关系
+        # 按距离排序并建立对应关系(“就近匹配”)
         edges.sort(key=lambda tup: tup[2])
-        old_used = np.zeros(len(self.item_list))
-        new_used = np.zeros(len(new_list))
         for link in edges:
             if old_used[link[0]] or new_used[link[1]]:
                 continue
-            old_used[link[0]] = new_used[link[1]] = 1
-            merged_list.append(Item(new_list[link[1]].pixel_pos, new_list[link[1]].color, self.item_list[link[0]].index))
+            if link[2] > CC.BLOCK_LINK_MAXLENGTH: # 距离超出阈值则终止
+                break
+            old_used[link[0]] = new_used[link[1]] = True
+            # 继承原index, 状态为可见, 继承原颜色, 采用新坐标
+            merged_list.append(Item(self.item_list[link[0]].index, Item_state.VISIBLE, self.item_list[link[0]].color, new_list[link[1]].coord))
 
-        # 让新的Item进来
+        # 对新列表中未匹配者进行检查
         for new_index, new_item in enumerate(new_list):
-            if not new_used[new_index]:
-                # 检查是否是一次"分离"
-                sep_index: int = -1
-                for old_index, old_item in enumerate(self.item_list):
-                    if old_item.bind < 0 or old_item.color != new_item.color or old_item.real_coord.dist_to_point(new_item.real_coord) > CC.BLOCK_COMBINE_THRESH:
-                        continue
-                    sep_index = old_index
-                    break
-                if sep_index >= 0:
-                    self.item_list[sep_index].bind = -1 # 解bind并复用index
-                    old_used[sep_index] = True
-                    merged_list.append(Item(new_item.pixel_pos, new_item.color, self.item_list[sep_index].index))
-                    continue
-
-                # 否则分配新的index
-                merged_list.append(Item(new_item.pixel_pos, new_item.color, self.item_index_counter))
-                self.item_index_counter += 1
-
-        # 旧的找不到, 则考虑合并
-        for old_index, old_item in enumerate(self.item_list):
-            if old_used[old_index] or old_item.bind >= 0:
+            if new_used[new_index]:
                 continue
-            for new_index, new_item in enumerate(merged_list): # 注意此处是merged_list
-                if new_item.color == old_item.color and old_item.real_coord.dist_to_point(new_item.real_coord) <= CC.BLOCK_COMBINE_THRESH:
-                    itm = Item(new_item.pixel_pos, new_item.color, old_item.index)
-                    itm.bind = new_item.index
-                    merged_list.append(itm)
-                    break
+            # 首先检查是否为“卸货”
+            # TODO
 
-        # 继承bind
+            # 其次检查是否是一次"分离"
+            sep_index: int = -1
+            for old_index, old_item in enumerate(self.item_list):
+                if old_item.bind < 0 or old_item.color != new_item.color or old_item.coord.dist_to_point(new_item.coord) > CC.BLOCK_COMBINE_THRESH:
+                    continue
+                sep_index = old_index
+                break
+            if sep_index >= 0:
+                self.item_list[sep_index].bind = -1 # 解bind
+                old_used[sep_index] = True
+                # 继承原index, 状态为可见, 继承原颜色, 采用新坐标
+                merged_list.append(Item(self.item_list[sep_index].index, Item_state.VISIBLE, new_item.color, new_item.coord))
+                continue
+
+            # 否则新建物品, 分配新的index
+            new_used[new_index] = True
+            merged_list.append(Item(self.item_index_counter, Item_state.VISIBLE, new_item.color, new_item.coord))
+            self.item_index_counter += 1
+
+        # 对旧列表中未匹配者进行检查
         for old_index, old_item in enumerate(self.item_list):
-            if old_item.bind >= 0 and any(map(lambda item: item.index == old_item.bind, self.item_list)):
+            if old_used[old_index] or old_item.state == Item_state.ON_CAR:
+                continue
+            # 检查物体是否在车后
+            pix_pos = round(old_item.pixel_pos)
+            if old_item.pixel_pos.in_range((0, CC.TRANSFORMED_WIDTH), (0, CC.TRANSFORMED_HEIGHT)) and self.car_mask[pix_pos[1], pix_pos[0]]: # 暂时未用car_near_mask
+                # 状态变为不可见, 此外均继承自原物体
+                merged_list.append(old_item)
+                merged_list[-1].state = Item_state.INVISIBLE
+                continue
+            # 检查是否是物体合并
+            for new_index, new_item in enumerate(merged_list): # 注意此处是merged_list
+                if new_item.color == old_item.color and old_item.coord.dist_to_point(new_item.coord) <= CC.BLOCK_COMBINE_THRESH:
+                    # 继承原index, 状态为BOUND, 继承原颜色, 采用被绑定物体的坐标
+                    merged_list.append(Item(old_item.index, Item_state.BOUND, old_item.color, new_item.coord))
+                    break
+            # 否则删除物体(无动作)
+
+        # 自动继承在车上的物块
+        for old_item in self.item_list:
+            if old_item.state == Item_state.ON_CAR:
+                merged_list.append(old_item)
+
+        # 若被绑定物体未消失且仍在距离内, 则自动继承bind, 否则删除
+        for old_index, old_item in enumerate(self.item_list):
+            if old_item.state != Item_state.BOUND:
+                continue
+            if any(map(lambda item: (item.index == old_item.bind) and old_item.coord.dist_to_point(item.coord) <= CC.BLOCK_COMBINE_THRESH, self.item_list)):
                  merged_list.append(old_item)
 
         self.item_list = merged_list
@@ -354,7 +387,7 @@ class Camera:
 
                 # 利用car_mask排除
                 if (not point.in_range((0, CC.TRANSFORMED_WIDTH), (0, CC.TRANSFORMED_HEIGHT))) or self.car_mask[point[1], point[0]] == 0:
-                    ret.append(Item(Point(*transformed_position), color, -1))
+                    ret.append(Item(-1, Item_state.VISIBLE, color, self.pixel_to_coord(Point(*transformed_position))))
 
         return ret
 
@@ -389,11 +422,18 @@ class Camera:
         # 随后反选背景
         for lbound, ubound in CC.CAR_COLOR_THRESH:
             threshed &= (~cv2.inRange(blurred, lbound, ubound)) # type: ignore
+        # 对目标区域, 用不同的背景色反选
+        target_area = np.zeros_like(threshed)
+        lb = round(self.coord_to_pixel(CC.HOME_VERTEX["lb"]))
+        target_area[lb[1]:, :lb[0]] = 255
+        rt = round(self.coord_to_pixel(CC.HOME_VERTEX["rt"]))
+        target_area[:rt[1], rt[0]:] = 255
+        threshed &= (~cv2.inRange(blurred, *CC.CAR_HOME_COLOR)) | (~target_area) # type: ignore
         # 筛掉边框
         mask = np.zeros_like(threshed, dtype=np.uint8)
         mask[CC.CAR_BORDER_WIDTH:threshed.shape[0]-CC.CAR_BORDER_WIDTH, CC.CAR_BORDER_WIDTH:threshed.shape[1]-CC.CAR_BORDER_WIDTH] = 255
         threshed = mask & threshed
-        # cv2.imshow("threshed", threshed * 255), cv2.waitKey(1) # debug区
+        cv2.imshow("threshed", threshed * 255), cv2.waitKey(1) # debug区
         # 做一些形态学变换
         threshed = cv2.erode(threshed, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (CC.CAR_ERODE_KSIZE, CC.CAR_ERODE_KSIZE))) * 255
         # 提取轮廓
@@ -406,13 +446,15 @@ class Camera:
                 threshed = cv2.putText(threshed, str(area), contour[0][0], cv2.FONT_HERSHEY_COMPLEX, 0.5, (128, ))
                 self.car_mask = cv2.drawContours(self.car_mask, raw_contours, ind, (255,), -1)
         # 再膨胀回来
-        self.car_mask = cv2.dilate(self.car_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (CC.CAR_DILATE_KSIZE, CC.CAR_DILATE_KSIZE)))
+        self.car_mask = cv2.dilate(self.car_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (CC.CAR_DILATE_KSIZE, CC.CAR_DILATE_KSIZE)), borderType=cv2.BORDER_REPLICATE)
     def main_loop(self) -> None:
         """场外相机主循环"""
         while self.running:
             loop_start = time.monotonic()
 
             self.refresh_image()
+            frame_timestamp = time.monotonic()
+
             self.__estimate_other_cars()
             self.__refresh_items()
             self.__estimate_car_pose()
@@ -421,11 +463,11 @@ class Camera:
             scale_factor: float = CC.FIELD_SIZE[0] / CC.TRANSFORMED_WIDTH
             # 绘制物品坐标
             for item in self.item_list:
-                disp_color = CC.BLOCK_COMBINED_COLOR if item.bind >= 0 else CC.BLOCK_DISPLAY_COLOR
-                disp_nudge = Point(0, -20) if item.bind >= 0 else Point(0, 0)
+                disp_color = CC.BLOCK_DISPLAY_COLOR[item.state]
+                disp_nudge = Point(0, -20) if item.state == Item_state.BOUND else Point(0, 0)
 
                 cv2.circle(self.rendered_picture, round(item.pixel_pos + disp_nudge), 2, disp_color, -1)
-                out_str = "%d (%.2f, %.2f)" % (item.index, *item.real_coord)
+                out_str = "%d (%.2f, %.2f)" % (item.index, *item.coord)
                 cv2.putText(self.rendered_picture, out_str, round(item.pixel_pos + disp_nudge), cv2.FONT_HERSHEY_COMPLEX, 0.5, disp_color)
 
             # 绘制场地
@@ -449,7 +491,7 @@ class Camera:
 
             # 回传消息
             if isinstance(self.message_queue, Queue):
-                msg = Camera_message()
+                msg = Camera_message(frame_timestamp)
                 msg.item_list = self.item_list
                 msg.car_pose = self.car_pose
                 msg.car_last_update = self.car_last_update

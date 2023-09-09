@@ -6,6 +6,7 @@ if not __package__:
 else:
     from .utils import Point
 
+from enum import Enum
 from typing import Tuple, List, Dict, Literal
 from typing import Optional
 from numpy.typing import NDArray
@@ -39,47 +40,58 @@ SELECT_CORNER_LINE_COLOR: Tuple[int, int, int] = (0, 196, 0)
 """`选择角点`界面中的提示色"""
 
 # 物品识别相关常数
+class Item_state(Enum):
+    """物品状态枚举类"""
+    VISIBLE = 1
+    INVISIBLE = 2
+    ON_CAR = 3
+    BOUND = 4
 GAUSS_BLUR_KSIZE: int = 3
 """预先进行的高斯模糊的Kernel size"""
-BLOCK_HSV_LOWERBOUND: Dict[str, List[Tuple[int, int, int]]] = {"yellow": [(17, 96, 128)], "red": [(0, 96, 128), (175, 96, 128)]}
+Block_color_name = Literal["yellow", "red"]
+"""所有的物块颜色"""
+BLOCK_HSV_LOWERBOUND: Dict[Block_color_name, List[Tuple[int, int, int]]] = {"yellow": [(17, 96, 100)], "red": [(0, 112, 100), (170, 112, 100)]}
 """物块色彩HSV下界"""
-BLOCK_HSV_UPPERBOUND: Dict[str, List[Tuple[int, int, int]]] = {"yellow": [(33, 255, 255)], "red": [(13, 255, 255), (180, 255, 255)]}
+BLOCK_HSV_UPPERBOUND: Dict[Block_color_name, List[Tuple[int, int, int]]] = {"yellow": [(33, 255, 255)], "red": [(13, 255, 255), (255, 255, 255)]}
 """物块色彩HSV上界"""
 BLOCK_SIZE_THRESH: int = 25
 """物块大小阈值"""
-BLOCK_OUTLIER_THRESH: float = 0.08
+BLOCK_LINK_MAXLENGTH: float = 0.2
+"""物块就近匹配的距离阈值"""
+BLOCK_OUTLIER_THRESH: float = 0.05
 """物块'在界外'的判定阈值"""
 BLOCK_COMBINE_THRESH: float = 0.08
 """允许物块'粘合'与'分离'的距离阈值"""
-BLOCK_DISPLAY_COLOR: Tuple[int, int ,int] = (0, 255, 0)
-"""一般物块在渲染图中的标记颜色"""
-BLOCK_COMBINED_COLOR: Tuple[int, int ,int] = (192, 192, 0)
-"""'合并'的物块在渲染图中的标记颜色"""
+BLOCK_DISPLAY_COLOR: Dict[Item_state, Tuple[int, int ,int]] = {Item_state.VISIBLE: (0, 255, 0), Item_state.INVISIBLE: (0, 192, 192), Item_state.ON_CAR: (192, 0, 192), Item_state.BOUND: (192, 192, 0)}
+"""不同状态物块在渲染图中的标记颜色"""
 
 # 小车定位相关常数
-CAR_ERODE_KSIZE: int = 5
+CAR_ERODE_KSIZE: int = 3
 """识别其它小车时, 进行的腐蚀操作的核大小"""
-CAR_DILATE_KSIZE: int = 30
+CAR_DILATE_KSIZE: int = 35
 """识别其它小车时, 进行的膨胀操作的核大小(用于表述"在车附近")"""
-CAR_COLOR_THRESH: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]] = [((12, 6, 150), (30, 35, 250)), ((0, 0, 245), (255, 255, 255)), ((0, 0, 170), (20, 15, 210))]
+CAR_COLOR_THRESH: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]] = [((12, 6, 150), (30, 35, 250)), ((0, 0, 245), (255, 255, 255)), ((0, 0, 170), (20, 15, 230))]
 """用于识别其它小车的色彩阈值(此常数定义的是背景的阈值)"""
+CAR_HOME_COLOR: Tuple[Tuple[int, int, int], Tuple[int, int, int]] = ((50, 10, 40), (140, 60, 80))
+"""识别其它小车时, 目标区域的背景色"""
 CAR_SIZE_THRESH: int = 3000
 """识别其它小车的大小阈值"""
-CAR_BORDER_WIDTH: int = 25
+CAR_BORDER_WIDTH: int = 20
 """识别其它小车时, 对场地周边进行排除的像素宽度"""
 CAR_DISPLAY_COLOR: Tuple[int, int, int] = (0, 255, 0)
 """小车在渲染图中的标记颜色"""
 
 # 目标区域相关常数
 Home_names = Literal["lb", "rt"]
-AVAILABLE_HOME_POSE: Dict[Home_names, Point] = {"lb": Point(0.1, 0.2), "rt": Point(2.9, 1.8)}
+HOME_VERTEX: Dict[Home_names, Point] = {"lb": Point(0.2, 0.3), "rt": Point(2.8, 1.7)}
+AVAILABLE_HOME_POS: Dict[Home_names, Point] = {"lb": Point(0.1, 0.1), "rt": Point(2.90, 1.9)}
 HOME_RANGE: Dict[Home_names, Tuple[Tuple[float, float], Tuple[float, float]]] = {"lb": ((-np.inf, 0.2), (-np.inf, 0.3)), "rt": ((2.8, np.inf), (1.7, np.inf))}
 
-HOME_NAME: Home_names = "lb"
-HOME_POS: Point = AVAILABLE_HOME_POSE[HOME_NAME]
+HOME_NAME: Home_names = "rt"
+HOME_POS: Point = AVAILABLE_HOME_POS[HOME_NAME]
 
-ENEMY_HOME_NAME: Optional[Home_names] = "rt"
-ENEMY_HOME_POS: Optional[Point] = None if not ENEMY_HOME_NAME else AVAILABLE_HOME_POSE[ENEMY_HOME_NAME]
+ENEMY_HOME_NAME: Optional[Home_names] = None
+ENEMY_HOME_POS: Optional[Point] = None if not ENEMY_HOME_NAME else AVAILABLE_HOME_POS[ENEMY_HOME_NAME]
 HOME_DISPLAY_COLOR: Tuple[int, int, int] = (255, 80, 80)
 ENEMY_HOME_DISPLAY_COLOR: Tuple[int, int, int] = (80, 80, 255)
 
