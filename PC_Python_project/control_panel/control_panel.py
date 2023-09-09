@@ -29,6 +29,7 @@ import constants as AC # algorithm constants
 
 # 类型注释系列import
 from typing import Optional, Literal
+from typing import Tuple, Callable
 from numpy.typing import NDArray
 
 BAUDRATE: int = 9600
@@ -304,12 +305,12 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                     if ind == other_ind:
                         continue
                     d1 = other.coord.dist_to_segment(car_pos, item.coord) # 小车->物块
-                    d2 = other.coord.dist_to_segment(item.coord, CC.HOME_POS) # 物块->终点
+                    d2 = other.coord.dist_to_segment(item.coord, CC.HOME_ENTER_POSE[CC.HOME_NAME][0]) # 物块->终点
                     if d1 < AC.NAV_ITEM_COLLIDE_THRESH or d2 < AC.NAV_ITEM_COLLIDE_THRESH:
                         collide = True
                         break
                 if not collide:
-                    path_length: float = item.coord.dist_to_point(car_pos) + item.coord.dist_to_point(CC.HOME_POS)
+                    path_length: float = item.coord.dist_to_point(car_pos) + item.coord.dist_to_point(CC.HOME_ENTER_POSE[CC.HOME_NAME][0])
                     if path_length < closest_length:
                         closest_id = ind
                         closest_length = path_length
@@ -321,8 +322,16 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                 self.__log_once("[主算法] 向目标%s移动" % str(camera_message.item_list[closest_id].coord), COMMAND_COLOR)
 
             # 导航过去
+            target_item = camera_message.item_list[closest_id]
             self.alg_status_update_signal.emit("接近物块")
-            self.__navigate_to(camera_message.item_list[closest_id].coord, 0.35, math.radians(5))
+            vec_CI = target_item.coord - car_pos
+            if vec_CI.get_length() > 0.6:
+                self.__nav_goto(car_pos + vec_CI * (1 - 0.4 / vec_CI.get_length()), 0.1)
+                continue # 要求重新刷新
+            if vec_CI.get_length() > 0.33:
+                self.__nav_goto(car_pos + vec_CI * (1 - 0.28 / vec_CI.get_length()), 0.05)
+            car_pos = deepcopy(self.camera_message.car_pose[0]) # 刷新?
+            self.__nav_turn_to(car_pos.angle_to(target_item.coord), math.radians(5))
 
             self.alg_status_update_signal.emit("拾取物块")
             self.__log_once("[主算法] 进入抓取模式", COMMAND_COLOR)
@@ -334,7 +343,16 @@ class Control_panel(QMainWindow, Ui_MainWindow):
             # 导航回家
             self.alg_status_update_signal.emit("返回目标区")
             self.__log_once("[主算法] 返回目标区", COMMAND_COLOR)
-            self.__navigate_to(CC.HOME_POS, 0.3, math.radians(30))
+            while True:
+                self.__nav_goto(CC.HOME_ENTER_POSE[CC.HOME_NAME][0], 0.05, stop_crit=self.__to_home_stop_crit)
+                if self.__to_home_stop_crit(self.camera_message): break
+                self.__nav_turn_to(CC.HOME_ENTER_POSE[CC.HOME_NAME][1], math.radians(5), stop_crit=self.__to_home_stop_crit)
+                if self.__to_home_stop_crit(self.camera_message): break
+                self.stm32_serial.inst_shift(0, -150)
+                if self.__to_home_stop_crit(self.camera_message): break
+                self.stm32_serial.inst_shift(50, 0)
+                self.__wait_for_result("shift")
+                break
 
             self.alg_status_update_signal.emit("放置物块")
             self.__log_once("[主算法] 进入放置模式", COMMAND_COLOR)
@@ -343,7 +361,10 @@ class Control_panel(QMainWindow, Ui_MainWindow):
             #     continue
             input("确认指令:")
 
-            self.__log_once("[主算法] 放置成功", COMMAND_COLOR)
+            self.__log_once("[主算法] 放置成功, 离开", COMMAND_COLOR)
+            self.stm32_serial.inst_shift(-200, 150)
+            self.__wait_for_result("shift")
+
             collected_blocks += 1
             if collected_blocks >= 10:
                 break
@@ -368,31 +389,79 @@ class Control_panel(QMainWindow, Ui_MainWindow):
             with self.camera_cond:
                 self.camera_cond.wait()
         return ret
-    def __navigate_to(self, target_pos: Point, dist_thresh: float, angle_thresh: float) -> None:
-        """导航至某位置, 该函数在小车到位后才会返回"""
-        while True:
+    def __nav_goto(self, target_pos: Point, thresh: float, *, shift_preferred: bool = False, max_adjust: int = 10000, stop_crit: Optional[Callable[[Camera_message], bool]] = None) -> int:
+        """让小车行驶至指定位置
+
+        Args:
+            `target_pos` (Point): 目标位置
+            `thresh` (float): 允许的位置偏差, 单位为米
+            `shift_preferred` (bool, optional): 是否采用左右平移的方式进行移动, 默认为否
+            `stop_crit` (Callable[[Camera_message], bool], optional): 提前停止的条件, 默认不提前停止
+        """
+        adjust_count: int = 0
+        while adjust_count < max_adjust:
             camera_message: Camera_message = deepcopy(self.camera_message)
-            car_pos: Point = camera_message.car_pose[0]
+            car_pos, car_angle = camera_message.car_pose
             target_distance: float = car_pos.dist_to_point(target_pos)
             target_angle: float = car_pos.angle_to(target_pos)
-            target_angle_diff: int = round(math.degrees(Point.angle_between(camera_message.car_pose[1], target_angle)))
-
-            # 完成条件
-            if target_distance < dist_thresh and Point.angle_like(camera_message.car_pose[1], car_pos.angle_to(target_pos), angle_thresh):
-                break
-            elif abs(target_angle_diff) > 5: # 先转角
-                input("确认指令: 旋转%d" % target_angle_diff)
-                self.stm32_serial.inst_steer(target_angle_diff)
-                self.__wait_for_result("steer")
-            else: # 只需前进
-                limited_dist = target_distance - dist_thresh
-                limited_dist = min(limited_dist, AC.NAV_MAX_FORWARD)
-                limited_dist = min(limited_dist, self.__check_wall_collision_dist(car_pos, target_angle) - AC.NAV_ARM_LENGTH - AC.NAV_WALL_COLLIDE_THRESH)
+            # 进行优先检查
+            if (stop_crit is not None) and stop_crit(camera_message):
+                return adjust_count
+            # 在误差范围内则返回
+            if target_distance < thresh:
+                return adjust_count
+            # 否则旋转后进行移动
+            if not shift_preferred:
+                if self.__nav_turn_to(target_angle, AC.NAV_GOTO_ANGLE_THRESH, max_adjust=10, stop_crit=stop_crit):
+                    continue
+                # 计算前进距离
+                limited_dist = min(target_distance, AC.NAV_MAX_FORWARD)
+                limited_dist = min(limited_dist, max(self.__check_wall_collision_dist(car_pos, target_angle) - AC.NAV_ARM_LENGTH - AC.NAV_WALL_COLLIDE_THRESH, 0))
                 limited_dist = round(limited_dist * 1000)
-
                 input("确认指令: 前进%d" % limited_dist)
                 self.stm32_serial.inst_shift(limited_dist, 0)
-                self.__wait_for_result("shift")
+            else:
+                rshift_dist = Point.angle_between(car_angle, target_angle - math.radians(90))
+                lshift_dist = Point.angle_between(car_angle, target_angle + math.radians(90))
+                target_angle = target_angle - math.radians(90) if rshift_dist < lshift_dist else target_angle + math.radians(90)
+                shift_sign = 1 if rshift_dist < lshift_dist else -1
+                if self.__nav_turn_to(target_angle, AC.NAV_GOTO_ANGLE_THRESH, max_adjust=10, stop_crit=stop_crit):
+                    continue
+                # 计算平移距离
+                limited_dist = min(target_distance, AC.NAV_MAX_SHIFT)
+                limited_dist = min(limited_dist, max(self.__check_wall_collision_dist(car_pos, target_angle) - AC.NAV_WALL_COLLIDE_THRESH, 0)) # 不再加上夹爪长度
+                limited_dist = round(limited_dist * 1000 * shift_sign)
+                input("确认指令: 右移%d" % limited_dist)
+                self.stm32_serial.inst_shift(0, limited_dist)
+            self.__wait_for_result("shift")
+            adjust_count += 1
+        return adjust_count
+    def __nav_turn_to(self, target_angle: float, thresh: float, *, max_adjust: int = 10000, stop_crit: Optional[Callable[[Camera_message], bool]] = None) -> int:
+        """将小车转至指定方向
+
+        Args:
+            `target_angle` (float): 目标方向, 单位为弧度
+            `thresh` (float): 允许的角度偏差, 单位为弧度
+            `max_adjust` (int, optional): 最大调整次数, 默认无限制
+            `stop_crit` (Callable[[Camera_message], bool], optional): 提前停止的条件, 默认不提前停止
+        """
+        adjust_count: int = 0
+        while adjust_count < max_adjust:
+            camera_message: Camera_message = deepcopy(self.camera_message)
+            target_angle_diff: float = Point.angle_between(camera_message.car_pose[1], target_angle)
+            # 进行优先检查
+            if (stop_crit is not None) and stop_crit(camera_message):
+                return adjust_count
+            # 在误差范围内则返回
+            if abs(target_angle_diff) <= thresh:
+                return adjust_count
+            # 否则发出旋转指令
+            turn_angle: int = round(math.degrees(target_angle_diff))
+            self.stm32_serial.inst_steer(turn_angle)
+            self.__wait_for_result("steer")
+
+            adjust_count += 1
+        return adjust_count
     @staticmethod
     def __check_wall_collision_dist(curr_pos: Point, angle: float) -> float:
         ret: float = 1e9
@@ -403,10 +472,14 @@ class Control_panel(QMainWindow, Ui_MainWindow):
         for item in (right_bound, left_bound, upper_bound, lower_bound):
             ret = ret if item < 0 else min(ret, item)
         return ret
+    @staticmethod
+    def __to_home_stop_crit(msg: Camera_message) -> bool:
+        car_pos, car_angle = msg.car_pose
+        return (car_pos + Point(math.cos(car_angle), math.sin(car_angle)) * 0.2).in_range(*CC.HOME_GRIPPER_RANGE[CC.HOME_NAME])
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    win = Control_panel(no_STM=False, no_camera=False)
+    win = Control_panel(no_STM=False, no_camera=True)
     win.show()
 
     app.exec()

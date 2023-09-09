@@ -82,7 +82,7 @@ class Camera_message:
     """场外相机类回传的消息"""
 
     timestamp: float
-    """生成该消息所用照片的接收时间戳"""
+    """生成该消息所用照片的接收时间戳, 采用time.monotonic()"""
 
     enemy_home_pos: Point
     """对方目标区域位置"""
@@ -126,6 +126,8 @@ class Camera:
     car_near_mask: NDArray[np.uint8]
     """被认定为"接近小车"的区域"""
 
+    image_time: float
+    """从`Realtime_camera`中读取到最新图片的时间, 采用time.monotonic()"""
     image_rgb: NDArray[np.uint8]
     """当前最新的图片, 已去畸变"""
     image_gray: NDArray
@@ -182,7 +184,7 @@ class Camera:
         cv2.waitKey(-1)
 
         # 生成变换矩阵
-        corner_list = [(53, 589), (1098, 941), (1206, 47), (307, 105)]
+        corner_list = [(38, 626), (1102, 938), (1189, 32), (280, 123)]
         assert len(corner_list) == 4
         self.transform_to_top = cv2.getPerspectiveTransform(np.array(corner_list, dtype=np.float32),
                                             np.array([(0, CC.TRANSFORMED_HEIGHT), (CC.TRANSFORMED_WIDTH, CC.TRANSFORMED_HEIGHT), (CC.TRANSFORMED_WIDTH, 0), (0, 0)], dtype=np.float32))
@@ -256,6 +258,7 @@ class Camera:
         while True:
             success, self.image_rgb = self.camera.read()
             if success:
+                self.image_time = time.monotonic()
                 break
             time.sleep(0.1)
 
@@ -408,7 +411,7 @@ class Camera:
 
             # 提取平面的小车位姿
             weird_axes: bool = abs(tag_pose[2, 2]) < abs(tag_pose[1, 2]) # 假如旋转矩阵的三个轴排列方式比较奇怪
-            self.car_last_update = time.monotonic()
+            self.car_last_update = self.image_time
             if weird_axes:
                 print(weird_axes, self.car_pose[1])
             else:
@@ -453,8 +456,6 @@ class Camera:
             loop_start = time.monotonic()
 
             self.refresh_image()
-            frame_timestamp = time.monotonic()
-
             self.__estimate_other_cars()
             self.__refresh_items()
             self.__estimate_car_pose()
@@ -471,15 +472,15 @@ class Camera:
                 cv2.putText(self.rendered_picture, out_str, round(item.pixel_pos + disp_nudge), cv2.FONT_HERSHEY_COMPLEX, 0.5, disp_color)
 
             # 绘制场地
-            home_render_pix = round(self.coord_to_pixel(CC.HOME_POS))
+            home_render_pix = round(self.coord_to_pixel(CC.HOME_DISPLAY_POS[CC.HOME_NAME]))
             cv2.circle(self.rendered_picture, home_render_pix, 6, CC.HOME_DISPLAY_COLOR, -1)
             cv2.putText(self.rendered_picture, " (%d)" % np.count_nonzero([it.in_base == CC.HOME_NAME for it in self.item_list]),
                         home_render_pix, cv2.FONT_HERSHEY_COMPLEX, 0.5, CC.HOME_DISPLAY_COLOR)
-            if isinstance(CC.ENEMY_HOME_POS, Point):
-                home_render_pix = round(self.coord_to_pixel(CC.ENEMY_HOME_POS))
+            if isinstance(CC.ENEMY_HOME_NAME, str):
+                home_render_pix = round(self.coord_to_pixel(CC.HOME_DISPLAY_POS[CC.ENEMY_HOME_NAME]))
                 cv2.circle(self.rendered_picture, home_render_pix, 6, CC.ENEMY_HOME_DISPLAY_COLOR, -1)
                 cv2.putText(self.rendered_picture, " (%d)" % np.count_nonzero([it.in_base == CC.ENEMY_HOME_NAME for it in self.item_list]),
-                        home_render_pix, cv2.FONT_HERSHEY_COMPLEX, 0.5, CC.ENEMY_HOME_DISPLAY_COLOR)
+                            home_render_pix, cv2.FONT_HERSHEY_COMPLEX, 0.5, CC.ENEMY_HOME_DISPLAY_COLOR)
 
             # 绘制小车位置与方向
             if hasattr(self, "car_pose"):
@@ -491,7 +492,7 @@ class Camera:
 
             # 回传消息
             if isinstance(self.message_queue, Queue):
-                msg = Camera_message(frame_timestamp)
+                msg = Camera_message(self.image_time)
                 msg.item_list = self.item_list
                 msg.car_pose = self.car_pose
                 msg.car_last_update = self.car_last_update

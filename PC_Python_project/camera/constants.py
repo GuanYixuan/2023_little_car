@@ -1,5 +1,6 @@
 """与场外相机模块相关的常数"""
 
+import math
 import numpy as np
 if not __package__:
     from utils import Point
@@ -58,7 +59,7 @@ BLOCK_SIZE_THRESH: int = 25
 """物块大小阈值"""
 BLOCK_LINK_MAXLENGTH: float = 0.2
 """物块就近匹配的距离阈值"""
-BLOCK_OUTLIER_THRESH: float = 0.05
+BLOCK_OUTLIER_THRESH: float = 0.03
 """物块'在界外'的判定阈值"""
 BLOCK_COMBINE_THRESH: float = 0.08
 """允许物块'粘合'与'分离'的距离阈值"""
@@ -69,12 +70,12 @@ BLOCK_DISPLAY_COLOR: Dict[Item_state, Tuple[int, int ,int]] = {Item_state.VISIBL
 CAR_ERODE_KSIZE: int = 3
 """识别其它小车时, 进行的腐蚀操作的核大小"""
 CAR_DILATE_KSIZE: int = 35
-"""识别其它小车时, 进行的膨胀操作的核大小(用于表述"在车附近")"""
-CAR_COLOR_THRESH: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]] = [((12, 6, 150), (30, 35, 250)), ((0, 0, 245), (255, 255, 255)), ((0, 0, 170), (20, 15, 230))]
+"""识别其它小车时, 进行的膨胀操作的核大小(用于刻画"在车附近")"""
+CAR_COLOR_THRESH: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]] = [((12, 6, 150), (30, 35, 250)), ((0, 0, 245), (255, 255, 255)), ((0, 0, 170), (20, 15, 230)), ((28, 0, 180), (32, 15, 210))]
 """用于识别其它小车的色彩阈值(此常数定义的是背景的阈值)"""
-CAR_HOME_COLOR: Tuple[Tuple[int, int, int], Tuple[int, int, int]] = ((50, 10, 40), (140, 60, 80))
+CAR_HOME_COLOR: Tuple[Tuple[int, int, int], Tuple[int, int, int]] = ((50, 10, 10), (140, 140, 50))
 """识别其它小车时, 目标区域的背景色"""
-CAR_SIZE_THRESH: int = 3000
+CAR_SIZE_THRESH: int = 2500
 """识别其它小车的大小阈值"""
 CAR_BORDER_WIDTH: int = 20
 """识别其它小车时, 对场地周边进行排除的像素宽度"""
@@ -83,15 +84,21 @@ CAR_DISPLAY_COLOR: Tuple[int, int, int] = (0, 255, 0)
 
 # 目标区域相关常数
 Home_names = Literal["lb", "rt"]
+"""所有可能的目标区域名称"""
 HOME_VERTEX: Dict[Home_names, Point] = {"lb": Point(0.2, 0.3), "rt": Point(2.8, 1.7)}
-AVAILABLE_HOME_POS: Dict[Home_names, Point] = {"lb": Point(0.1, 0.1), "rt": Point(2.90, 1.9)}
+"""目标区域顶点位置, 用在Camera中"""
+HOME_DISPLAY_POS: Dict[Home_names, Point] = {"lb": Point(0.05, 0.05), "rt": Point(2.75, 1.95)}
+"""目标区域的显示位置, 用在Camera中"""
+HOME_ENTER_POSE: Dict[Home_names, Tuple[Point, float]] = {"lb": (Point(0.3, 0.3), math.radians(180)), "rt": (Point(2.70, 1.7), 0)}
+"""目标区域的进入姿态, 用于导航"""
 HOME_RANGE: Dict[Home_names, Tuple[Tuple[float, float], Tuple[float, float]]] = {"lb": ((-np.inf, 0.2), (-np.inf, 0.3)), "rt": ((2.8, np.inf), (1.7, np.inf))}
+"""目标区域的范围, 用于判断物块是否在区域内"""
+HOME_GRIPPER_RANGE: Dict[Home_names, Tuple[Tuple[float, float], Tuple[float, float]]] = {"lb": ((-np.inf, 0.15), (-np.inf, 0.25)), "rt": ((2.85, np.inf), (1.75, np.inf))}
+"""目标区域的范围, 用于判断小车的夹爪是否已到达放置区"""
 
 HOME_NAME: Home_names = "rt"
-HOME_POS: Point = AVAILABLE_HOME_POS[HOME_NAME]
-
 ENEMY_HOME_NAME: Optional[Home_names] = None
-ENEMY_HOME_POS: Optional[Point] = None if not ENEMY_HOME_NAME else AVAILABLE_HOME_POS[ENEMY_HOME_NAME]
+
 HOME_DISPLAY_COLOR: Tuple[int, int, int] = (255, 80, 80)
 ENEMY_HOME_DISPLAY_COLOR: Tuple[int, int, int] = (80, 80, 255)
 
