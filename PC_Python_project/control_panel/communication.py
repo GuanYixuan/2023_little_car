@@ -4,6 +4,7 @@ import time
 import serial
 import threading
 from multiprocessing.queues import Queue
+from serial.serialutil import SerialException
 
 from typing import List
 
@@ -46,8 +47,17 @@ class Serial_handler:
         self.message_queue = []
         self.extra_queues = []
         self.instruction_queue = []
-        self.serial_instance = serial.Serial(serial_name, baudrate)
-        self.serial_instance.timeout = 0.1
+
+        # 串口初始化
+        attempt: int = 1
+        while True:
+            try:
+                if attempt > 1: print("串口初始化*%d" % attempt)
+                self.serial_instance = serial.Serial(serial_name, baudrate)
+                self.serial_instance.timeout = 0.1
+                break
+            except SerialException:
+                attempt += 1
 
         # 各线程初始化
         self.ping_cond = threading.Condition()

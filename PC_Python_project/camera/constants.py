@@ -69,7 +69,7 @@ BLOCK_DISPLAY_COLOR: Dict[Item_state, Tuple[int, int ,int]] = {Item_state.VISIBL
 # 小车定位相关常数
 CAR_ERODE_KSIZE: int = 3
 """识别其它小车时, 进行的腐蚀操作的核大小"""
-CAR_DILATE_KSIZE: int = 35
+CAR_DILATE_KSIZE: int = 40
 """识别其它小车时, 进行的膨胀操作的核大小(用于刻画"在车附近")"""
 CAR_COLOR_THRESH: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]] = [((12, 6, 150), (30, 35, 250)), ((0, 0, 245), (255, 255, 255)), ((0, 0, 170), (20, 15, 230)), ((28, 0, 180), (32, 15, 210))]
 """用于识别其它小车的色彩阈值(此常数定义的是背景的阈值)"""
@@ -87,7 +87,7 @@ Home_names = Literal["lb", "rt"]
 """所有可能的目标区域名称"""
 HOME_VERTEX: Dict[Home_names, Point] = {"lb": Point(0.2, 0.3), "rt": Point(2.8, 1.7)}
 """目标区域顶点位置, 用在Camera中"""
-HOME_DISPLAY_POS: Dict[Home_names, Point] = {"lb": Point(0.05, 0.05), "rt": Point(2.75, 1.95)}
+HOME_DISPLAY_POS: Dict[Home_names, Point] = {"lb": Point(0.05, 0.05), "rt": Point(2.8, 1.95)}
 """目标区域的显示位置, 用在Camera中"""
 HOME_ENTER_POSE: Dict[Home_names, Tuple[Point, float]] = {"lb": (Point(0.3, 0.3), math.radians(180)), "rt": (Point(2.70, 1.7), 0)}
 """目标区域的进入姿态, 用于导航"""
@@ -95,8 +95,10 @@ HOME_RANGE: Dict[Home_names, Tuple[Tuple[float, float], Tuple[float, float]]] = 
 """目标区域的范围, 用于判断物块是否在区域内"""
 HOME_GRIPPER_RANGE: Dict[Home_names, Tuple[Tuple[float, float], Tuple[float, float]]] = {"lb": ((-np.inf, 0.15), (-np.inf, 0.25)), "rt": ((2.85, np.inf), (1.75, np.inf))}
 """目标区域的范围, 用于判断小车的夹爪是否已到达放置区"""
+HOME_NEAR_RANGE: Dict[Home_names, Tuple[Tuple[float, float], Tuple[float, float]]] = {"lb": ((-np.inf, 0.35), (-np.inf, 0.4)), "rt": ((2.65, np.inf), (1.6, np.inf))}
+"""理论上能够通过转向让夹爪进入目标区域的范围"""
 
-HOME_NAME: Home_names = "rt"
+HOME_NAME: Home_names = "lb"
 ENEMY_HOME_NAME: Optional[Home_names] = None
 
 HOME_DISPLAY_COLOR: Tuple[int, int, int] = (255, 80, 80)

@@ -336,16 +336,15 @@ class Control_panel(QMainWindow, Ui_MainWindow):
             self.alg_status_update_signal.emit("拾取物块")
             self.__log_once("[主算法] 进入抓取模式", COMMAND_COLOR)
             self.stm32_serial.inst_grab_mode()
-            # if not self.__wait_for_result("grab"):
-            #     continue
-            input("确认指令:")
+            if not self.__wait_for_result("grab"):
+                continue
 
             # 导航回家
             self.alg_status_update_signal.emit("返回目标区")
             self.__log_once("[主算法] 返回目标区", COMMAND_COLOR)
             while True:
-                self.__nav_goto(CC.HOME_ENTER_POSE[CC.HOME_NAME][0], 0.05, stop_crit=self.__to_home_stop_crit)
-                if self.__to_home_stop_crit(self.camera_message): break
+                self.__nav_goto(CC.HOME_ENTER_POSE[CC.HOME_NAME][0], 0.05, stop_crit=self.__to_home_near_crit)
+                if self.__to_home_near_crit(self.camera_message): break
                 self.__nav_turn_to(CC.HOME_ENTER_POSE[CC.HOME_NAME][1], math.radians(5), stop_crit=self.__to_home_stop_crit)
                 if self.__to_home_stop_crit(self.camera_message): break
                 self.stm32_serial.inst_shift(0, -150)
@@ -353,13 +352,23 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                 self.stm32_serial.inst_shift(50, 0)
                 self.__wait_for_result("shift")
                 break
+            if not self.__to_home_stop_crit(self.camera_message): # 已到达目标区域附近, 只需要一个旋转
+                assert self.__to_home_near_crit(self.camera_message)
+                car_pos, car_angle = self.camera_message.car_pose
+
+                min_turn : int = 10000
+                for deg_add in range(-180, 185, 5):
+                    if (car_pos + Point(math.cos(car_angle + math.radians(deg_add)), math.sin(car_angle + math.radians(deg_add))) * AC.NAV_HOME_ARM_LENGTH).in_range(*CC.HOME_GRIPPER_RANGE[CC.HOME_NAME]):
+                        if abs(deg_add) < abs(min_turn):
+                            min_turn = deg_add
+                assert abs(min_turn) <= 180
+                self.stm32_serial.inst_steer(min_turn)
+                self.__wait_for_result("steer")
 
             self.alg_status_update_signal.emit("放置物块")
             self.__log_once("[主算法] 进入放置模式", COMMAND_COLOR)
             self.stm32_serial.inst_place_mode()
-            # if not self.__wait_for_result("place"):
-            #     continue
-            input("确认指令:")
+            self.__wait_for_result("place") # 放置失败, 不知如何处理
 
             self.__log_once("[主算法] 放置成功, 离开", COMMAND_COLOR)
             self.stm32_serial.inst_shift(-200, 150)
@@ -416,7 +425,7 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                     continue
                 # 计算前进距离
                 limited_dist = min(target_distance, AC.NAV_MAX_FORWARD)
-                limited_dist = min(limited_dist, max(self.__check_wall_collision_dist(car_pos, target_angle) - AC.NAV_ARM_LENGTH - AC.NAV_WALL_COLLIDE_THRESH, 0))
+                limited_dist = min(limited_dist, max(self.__check_wall_collision_dist(car_pos, target_angle) - AC.NAV_COLLISION_ARM_LENGTH - AC.NAV_WALL_COLLIDE_THRESH, 0))
                 limited_dist = round(limited_dist * 1000)
                 input("确认指令: 前进%d" % limited_dist)
                 self.stm32_serial.inst_shift(limited_dist, 0)
@@ -475,11 +484,14 @@ class Control_panel(QMainWindow, Ui_MainWindow):
     @staticmethod
     def __to_home_stop_crit(msg: Camera_message) -> bool:
         car_pos, car_angle = msg.car_pose
-        return (car_pos + Point(math.cos(car_angle), math.sin(car_angle)) * 0.2).in_range(*CC.HOME_GRIPPER_RANGE[CC.HOME_NAME])
+        return (car_pos + Point(math.cos(car_angle), math.sin(car_angle)) * AC.NAV_HOME_ARM_LENGTH).in_range(*CC.HOME_GRIPPER_RANGE[CC.HOME_NAME])
+    @staticmethod
+    def __to_home_near_crit(msg: Camera_message) -> bool:
+        return msg.car_pose[0].in_range(*CC.HOME_NEAR_RANGE[CC.HOME_NAME])
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    win = Control_panel(no_STM=False, no_camera=True)
+    win = Control_panel(no_STM=False, no_camera=False)
     win.show()
 
     app.exec()

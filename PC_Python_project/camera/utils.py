@@ -29,14 +29,11 @@ class Point:
     y: float
 
     def __init__(self, x0: float, y0: float) -> None:
+        """构造函数, 如果希望用长度为2的可迭代对象创建`Point`, 可以考虑使用`Point(*obj)`"""
         self.x = x0
         self.y = y0
     def __str__(self) -> str:
         return "(%.2f, %.2f)" % (self.x, self.y)
-    @classmethod
-    def from_tuple(cls, dot: Iterable[float]) -> "Point":
-        """用tuple构造Point对象"""
-        return Point(*dot)
 
     def __add__(self, other: "Point | float") -> "Point":
         if isinstance(other, Point):
@@ -78,8 +75,8 @@ class Point:
         """判断此Point对象的x,y坐标是否均在给定范围内
 
         Args:
-            x_rng (Tuple[float, float], optional): x坐标范围. Defaults to (-∞, +∞).
-            y_rng (Tuple[float, float], optional): y坐标范围. Defaults to (-∞, +∞).
+            `x_rng` (Tuple[float, float], optional): x坐标范围. Defaults to (-∞, +∞).
+            `y_rng` (Tuple[float, float], optional): y坐标范围. Defaults to (-∞, +∞).
         """
         return x_rng[0] <= self.x and self.x < x_rng[1] and y_rng[0] <= self.y and self.y < y_rng[1]
     def to_rad(self) -> float:

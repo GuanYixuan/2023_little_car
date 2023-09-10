@@ -9,13 +9,14 @@ NAV_GOTO_ANGLE_THRESH: float = math.radians(5)
 """向指定点移动时, 容许的方向误差"""
 NAV_WALL_COLLIDE_THRESH: float = 0.05
 """路径规划时的边界碰撞阈值"""
-NAV_ARM_LENGTH: float = 0.25
-"""路径规划时考虑的夹爪长度(从Tag中心到夹爪末端)"""
+NAV_COLLISION_ARM_LENGTH: float = 0.25
+"""避免与墙壁碰撞时考虑的夹爪长度(从Tag中心到夹爪末端)"""
 NAV_MAX_FORWARD: float = 1.5
 """导航时一次前进的最长距离"""
 NAV_MAX_SHIFT: float = 0.3
 """导航时一次平移的最长距离"""
-
+NAV_HOME_ARM_LENGTH: float = 0.2
+"""返回目标区域时, 为了让夹爪末端伸至区域中, 考虑的夹爪长度"""
 
 WAIT_SUCC_DELAY: float = 0.3
 """在收到SUCCESS后的额外等待时间"""
