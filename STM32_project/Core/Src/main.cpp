@@ -233,13 +233,13 @@ int main(void)
         int16_t angle = *(int16_t*)(ins->data + 1);
         success = steer(angle);
         messages.wrap_append("%s: steer %hd\n", RETURN_MESSAGES[success], angle);
-        HAL_UART_Transmit(&OpenMV_UART_HANDLE, (uint8_t*)"EXECEND\n", 8, 1000);
+        HAL_UART_Transmit(&OpenMV_UART_HANDLE, (uint8_t*)"success:steer\n", 14, 1000);
       } else if (ins_type == 0x20) {
         int16_t forward = *(int16_t*)(ins->data + 1);
         int16_t shift_right = *(int16_t*)(ins->data + 3);
         success = shift(forward, shift_right);
         messages.wrap_append("%s: shift %hd %hd\n", RETURN_MESSAGES[success], forward, shift_right);
-        HAL_UART_Transmit(&OpenMV_UART_HANDLE, (uint8_t*)"EXECEND\n", 8, 1000);
+        HAL_UART_Transmit(&OpenMV_UART_HANDLE, (uint8_t*)"success:shift\n", 14, 1000);
       } else if (ins_type == 0x31) HAL_UART_Transmit(&PC_UART_HANDLE, &ins->data[1], INSTRUCTION_LENGTH - 1, 1000);
       else if (ins_type == 0x32) HAL_UART_Transmit(&OpenMV_UART_HANDLE, &ins->data[1], INSTRUCTION_LENGTH - 1, 1000);
       else messages.wrap_append("ILLEGAL INST 0x%02hx\n", ins_type);
