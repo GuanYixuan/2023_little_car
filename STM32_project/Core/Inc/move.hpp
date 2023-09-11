@@ -64,5 +64,8 @@ bool shift(int16_t forward, int16_t shift_right);
 // 上层接口, 让小车逆时针旋转指定的角度, 负数表示顺时针旋转
 bool steer(int16_t right_time);
 
+// 上层接口, 控制舵机转角
+bool spin_servo(int8_t servo_index, int16_t angle);
+
 int distToCnt(int16_t dist);
 #endif

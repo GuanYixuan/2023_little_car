@@ -14,6 +14,7 @@
 # define LENGTH_HALF 85
 # define WIDTH_HALF 95
 
+extern TIM_HandleTypeDef htim5;
 extern MOTOR motor[4];
 extern UART_HandleTypeDef huart1;
 
@@ -257,6 +258,15 @@ bool steer(int16_t angle) {
 bool shift(int16_t _forward, int16_t shift_right) {
     bool ret = forward(_forward);
     return ret && right(shift_right);
+}
+
+bool spin_servo(int8_t servo_index, int16_t angle) {
+    constexpr static uint32_t channels[] = {0, TIM_CHANNEL_1, TIM_CHANNEL_2};
+    static float temp;
+    temp = angle / 9.0  + 5;  // 占空比值 = 1/9 * 角度 + 5
+
+    __HAL_TIM_SET_COMPARE(&htim5, channels[servo_index], (uint16_t)temp); // 修改占空比
+    return true;
 }
 
 int distToCnt(int16_t dist) {

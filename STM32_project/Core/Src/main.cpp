@@ -28,6 +28,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <cstdio>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -55,10 +56,11 @@ TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
+TIM_HandleTypeDef htim5;
 TIM_HandleTypeDef htim8;
 
 UART_HandleTypeDef huart1;
-UART_HandleTypeDef huart2;
+UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
 PID pid[4];
@@ -72,10 +74,11 @@ static void MX_GPIO_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART1_UART_Init(void);
-static void MX_USART2_UART_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM8_Init(void);
 static void MX_TIM4_Init(void);
+static void MX_TIM5_Init(void);
+static void MX_USART3_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -83,7 +86,7 @@ static void MX_TIM4_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 #define PC_UART_HANDLE huart1
-#define OpenMV_UART_HANDLE huart2
+#define OpenMV_UART_HANDLE huart3
 
 #define INSTRUCTION_RECEIVE_TIMEOUT_MS 2000
 
@@ -165,10 +168,11 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_USART1_UART_Init();
-  MX_USART2_UART_Init();
   MX_TIM1_Init();
   MX_TIM8_Init();
   MX_TIM4_Init();
+  MX_TIM5_Init();
+  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
 
   /*编码器timer初始�???*/
@@ -233,16 +237,21 @@ int main(void)
         int16_t angle = *(int16_t*)(ins->data + 1);
         success = steer(angle);
         messages.wrap_append("%s: steer %hd\n", RETURN_MESSAGES[success], angle);
-        HAL_UART_Transmit(&OpenMV_UART_HANDLE, (uint8_t*)"EXECEND\n", 8, 1000);
+        HAL_UART_Transmit(&OpenMV_UART_HANDLE, (uint8_t*)"success:steer\n", 14, 1000);
       } else if (ins_type == 0x20) {
         int16_t forward = *(int16_t*)(ins->data + 1);
         int16_t shift_right = *(int16_t*)(ins->data + 3);
         success = shift(forward, shift_right);
         messages.wrap_append("%s: shift %hd %hd\n", RETURN_MESSAGES[success], forward, shift_right);
-        HAL_UART_Transmit(&OpenMV_UART_HANDLE, (uint8_t*)"EXECEND\n", 8, 1000);
+        HAL_UART_Transmit(&OpenMV_UART_HANDLE, (uint8_t*)"success:shift\n", 14, 1000);
       } else if (ins_type == 0x31) HAL_UART_Transmit(&PC_UART_HANDLE, &ins->data[1], INSTRUCTION_LENGTH - 1, 1000);
       else if (ins_type == 0x32) HAL_UART_Transmit(&OpenMV_UART_HANDLE, &ins->data[1], INSTRUCTION_LENGTH - 1, 1000);
-      else messages.wrap_append("ILLEGAL INST 0x%02hx\n", ins_type);
+      else if (ins_type == 0x40) {
+        int8_t servo_index = *(int8_t*)(ins->data + 1);
+        int16_t angle = *(int16_t*)(ins->data + 2);
+        success = spin_servo(servo_index, angle);
+        messages.wrap_append("%s: spin_servo %hd %hd\n", RETURN_MESSAGES[success], servo_index, angle);
+      } else messages.wrap_append("ILLEGAL INST 0x%02hx\n", ins_type);
 
       queue.pop();
     }
@@ -251,7 +260,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
   }
-//   /* USER CODE END 3 */
+  /* USER CODE END 3 */
 }
 
 /**
@@ -367,11 +376,11 @@ static void MX_TIM2_Init(void)
   htim2.Init.Period = 65535;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI1;
   sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
   sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
   sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
-  sConfig.IC1Filter = 5;
+  sConfig.IC1Filter = 0;
   sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
   sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
   sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
@@ -491,6 +500,59 @@ static void MX_TIM4_Init(void)
 }
 
 /**
+  * @brief TIM5 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM5_Init(void)
+{
+
+  /* USER CODE BEGIN TIM5_Init 0 */
+
+  /* USER CODE END TIM5_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM5_Init 1 */
+
+  /* USER CODE END TIM5_Init 1 */
+  htim5.Instance = TIM5;
+  htim5.Init.Prescaler = 7199;
+  htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim5.Init.Period = 199;
+  htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_PWM_Init(&htim5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim5, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim5, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim5, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM5_Init 2 */
+
+  /* USER CODE END TIM5_Init 2 */
+  HAL_TIM_MspPostInit(&htim5);
+
+}
+
+/**
   * @brief TIM8 Initialization Function
   * @param None
   * @retval None
@@ -601,35 +663,35 @@ static void MX_USART1_UART_Init(void)
 }
 
 /**
-  * @brief USART2 Initialization Function
+  * @brief USART3 Initialization Function
   * @param None
   * @retval None
   */
-static void MX_USART2_UART_Init(void)
+static void MX_USART3_UART_Init(void)
 {
 
-  /* USER CODE BEGIN USART2_Init 0 */
+  /* USER CODE BEGIN USART3_Init 0 */
 
-  /* USER CODE END USART2_Init 0 */
+  /* USER CODE END USART3_Init 0 */
 
-  /* USER CODE BEGIN USART2_Init 1 */
+  /* USER CODE BEGIN USART3_Init 1 */
 
-  /* USER CODE END USART2_Init 1 */
-  huart2.Instance = USART2;
-  huart2.Init.BaudRate = 9600;
-  huart2.Init.WordLength = UART_WORDLENGTH_8B;
-  huart2.Init.StopBits = UART_STOPBITS_1;
-  huart2.Init.Parity = UART_PARITY_NONE;
-  huart2.Init.Mode = UART_MODE_TX_RX;
-  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart2) != HAL_OK)
+  /* USER CODE END USART3_Init 1 */
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 115200;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN USART2_Init 2 */
+  /* USER CODE BEGIN USART3_Init 2 */
 
-  /* USER CODE END USART2_Init 2 */
+  /* USER CODE END USART3_Init 2 */
 
 }
 
@@ -647,6 +709,7 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOE_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
 
@@ -679,7 +742,7 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
-  __disable_irq();
+  // __disable_irq();
   while (1)
   {
   }
