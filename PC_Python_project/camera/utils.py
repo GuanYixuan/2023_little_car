@@ -163,8 +163,8 @@ class Realtime_camera(threading.Thread):
         while self.running:
             # block for fresh frame
             while self.running:
-                rv, img = self.capture.read()
                 frame_time = time.monotonic()
+                rv, img = self.capture.read()
                 if rv:
                     break
             counter += 1

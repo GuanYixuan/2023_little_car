@@ -91,7 +91,7 @@ HOME_VERTEX: Dict[Home_names, Point] = {"lb": Point(0.2, 0.3), "rt": Point(2.8, 
 """目标区域顶点位置, 用在Camera中"""
 HOME_DISPLAY_POS: Dict[Home_names, Point] = {"lb": Point(0.05, 0.05), "rt": Point(2.8, 1.95)}
 """目标区域的显示位置, 用在Camera中"""
-HOME_ENTER_POSE: Dict[Home_names, Tuple[Point, float]] = {"lb": (Point(0.3, 0.3), math.radians(180)), "rt": (Point(2.70, 1.7), 0)}
+HOME_ENTER_POSE: Dict[Home_names, Tuple[Point, float]] = {"lb": (Point(0.35, 0.35), math.radians(180)), "rt": (Point(2.65, 1.65), 0)}
 """目标区域的进入姿态, 用于导航"""
 HOME_RANGE: Dict[Home_names, Tuple[Tuple[float, float], Tuple[float, float]]] = {"lb": ((-np.inf, 0.2), (-np.inf, 0.3)), "rt": ((2.8, np.inf), (1.7, np.inf))}
 """目标区域的范围, 用于判断物块是否在区域内"""
@@ -100,7 +100,7 @@ HOME_GRIPPER_RANGE: Dict[Home_names, Tuple[Tuple[float, float], Tuple[float, flo
 HOME_NEAR_RANGE: Dict[Home_names, Tuple[Tuple[float, float], Tuple[float, float]]] = {"lb": ((-np.inf, 0.4), (-np.inf, 0.45)), "rt": ((2.6, np.inf), (1.55, np.inf))}
 """理论上能够通过转向让夹爪进入目标区域的范围"""
 
-HOME_NAME: Home_names = "rt"
+HOME_NAME: Home_names = "lb"
 ENEMY_HOME_NAME: Optional[Home_names] = None
 
 HOME_DISPLAY_COLOR: Tuple[int, int, int] = (255, 80, 80)

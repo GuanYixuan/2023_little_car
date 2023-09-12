@@ -304,7 +304,7 @@ class Control_panel(QMainWindow, Ui_MainWindow):
             # 缓存一份, 避免data race
             self.__log_once("[主算法] 刷新信息", COMMAND_COLOR)
             camera_message: Camera_message = deepcopy(self.camera_message)
-            car_pos: Point = camera_message.car_pose[0]
+            car_pos, car_angle = camera_message.car_pose
 
             closest_id: int = -1
             closest_length: float = 1e9
@@ -334,12 +334,37 @@ class Control_panel(QMainWindow, Ui_MainWindow):
             else:
                 self.__log_once("[主算法] 向目标%s移动" % str(camera_message.item_list[closest_id].coord), COMMAND_COLOR)
 
+            # 导航过去前, 先比较抽象地远离边缘
+            if not car_pos.in_range((AC.NAV_COLLISION_ARM_LENGTH, CC.FIELD_SIZE[0] - AC.NAV_COLLISION_ARM_LENGTH), (AC.NAV_COLLISION_ARM_LENGTH, CC.FIELD_SIZE[1] - AC.NAV_COLLISION_ARM_LENGTH)):
+                if car_pos.x < AC.NAV_COLLISION_ARM_LENGTH:
+                    self.stm32_serial.inst_shift(*round(Point(math.cos(car_angle), math.sin(car_angle)) * AC.NAV_WALL_CLEAR_MOVE_DIST * 1000))
+                elif car_pos.y < AC.NAV_COLLISION_ARM_LENGTH:
+                    self.stm32_serial.inst_shift(*round(Point(math.sin(car_angle), -math.cos(car_angle)) * AC.NAV_WALL_CLEAR_MOVE_DIST * 1000))
+                elif car_pos.x > CC.FIELD_SIZE[0] - AC.NAV_COLLISION_ARM_LENGTH:
+                    self.stm32_serial.inst_shift(*round(Point(math.cos(car_angle), math.sin(car_angle)) * -AC.NAV_WALL_CLEAR_MOVE_DIST * 1000))
+                elif car_pos.y > CC.FIELD_SIZE[1] - AC.NAV_COLLISION_ARM_LENGTH:
+                    self.stm32_serial.inst_shift(*round(Point(-math.sin(car_angle), math.cos(car_angle)) * AC.NAV_WALL_CLEAR_MOVE_DIST * 1000))
+                self.__wait_for_result("shift")
+                continue # 要求重新刷新
+
             # 导航过去
             target_item = camera_message.item_list[closest_id]
+            target_coord = target_item.coord
             self.alg_status_update_signal.emit("接近物块")
             vec_CI = target_item.coord - car_pos
-            if vec_CI.get_length() > 0.6:
-                self.__nav_goto(car_pos + vec_CI * (1 - 0.4 / vec_CI.get_length()), 0.1)
+            if vec_CI.get_length() > AC.NAV_BLOCK_APPROACH_MIN_DIST1:
+                near_wall_adjuster = Point(0, 0)
+                if target_coord.x < AC.NAV_ITEM_NEAR_WALL_THRESH: near_wall_adjuster += Point(1, 0)
+                if target_coord.y < AC.NAV_ITEM_NEAR_WALL_THRESH: near_wall_adjuster += Point(0, 1)
+                if target_coord.x > CC.FIELD_SIZE[0] - AC.NAV_ITEM_NEAR_WALL_THRESH: near_wall_adjuster += Point(-1, 0)
+                if target_coord.y > CC.FIELD_SIZE[1] - AC.NAV_ITEM_NEAR_WALL_THRESH: near_wall_adjuster += Point(0, -1)
+
+                if near_wall_adjuster.get_length() >= 0.5: # 如果物块接近墙
+                    self.__nav_goto(target_coord + near_wall_adjuster * AC.NAV_BLOCK_APPROACH_DIST1 / near_wall_adjuster.get_length(), AC.NAV_BLOCK_APPROACH_THRESH1,
+                                    stop_crit=lambda msg: self.__to_block_near_crit(msg, target_coord))
+                else: # 如果物块不接近墙的话
+                    self.__nav_goto(car_pos + vec_CI * (1 - AC.NAV_BLOCK_APPROACH_DIST1 / vec_CI.get_length()), AC.NAV_BLOCK_APPROACH_THRESH1,
+                                    stop_crit=lambda msg: self.__to_block_near_crit(msg, target_coord))
                 continue # 要求重新刷新
             if vec_CI.get_length() > 0.33:
                 self.__nav_goto(car_pos + vec_CI * (1 - 0.28 / vec_CI.get_length()), 0.05)
@@ -431,25 +456,13 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                 return adjust_count
             # 否则旋转后进行移动
             if not shift_preferred:
-                # 比较抽象地远离边缘
-                if not car_pos.in_range((AC.NAV_COLLISION_ARM_LENGTH, CC.FIELD_SIZE[0] - AC.NAV_COLLISION_ARM_LENGTH), (AC.NAV_COLLISION_ARM_LENGTH, CC.FIELD_SIZE[1] - AC.NAV_COLLISION_ARM_LENGTH)):
-                    if car_pos.x < AC.NAV_COLLISION_ARM_LENGTH:
-                        self.stm32_serial.inst_shift(*round(Point(math.cos(car_angle), math.sin(car_angle)) * AC.NAV_WALL_CLEAR_MOVE_DIST * 1000))
-                    elif car_pos.y < AC.NAV_COLLISION_ARM_LENGTH:
-                        self.stm32_serial.inst_shift(*round(Point(math.sin(car_angle), -math.cos(car_angle)) * AC.NAV_WALL_CLEAR_MOVE_DIST * 1000))
-                    elif car_pos.x > CC.FIELD_SIZE[0] - AC.NAV_COLLISION_ARM_LENGTH:
-                        self.stm32_serial.inst_shift(*round(Point(math.cos(car_angle), math.sin(car_angle)) * -AC.NAV_WALL_CLEAR_MOVE_DIST * 1000))
-                    elif car_pos.y > CC.FIELD_SIZE[1] - AC.NAV_COLLISION_ARM_LENGTH:
-                        self.stm32_serial.inst_shift(*round(Point(-math.sin(car_angle), math.cos(car_angle)) * AC.NAV_WALL_CLEAR_MOVE_DIST * 1000))
-                    self.__wait_for_result("shift")
-                    continue
                 if self.__nav_turn_to(target_angle, AC.NAV_GOTO_ANGLE_THRESH, max_adjust=10, stop_crit=stop_crit):
                     continue
                 # 计算前进距离
                 limited_dist = min(target_distance, AC.NAV_MAX_FORWARD)
                 limited_dist = min(limited_dist, max(self.__check_wall_collision_dist(car_pos, target_angle) - AC.NAV_COLLISION_ARM_LENGTH - AC.NAV_WALL_COLLIDE_THRESH, 0))
                 limited_dist = round(limited_dist * 1000)
-                input("确认指令: 前进%d" % limited_dist)
+                # if limited_dist >= 1000: input("确认指令: 前进%d" % limited_dist)
                 self.stm32_serial.inst_shift(limited_dist, 0)
             else:
                 rshift_dist = Point.angle_between(car_angle, target_angle - math.radians(90))
@@ -504,6 +517,9 @@ class Control_panel(QMainWindow, Ui_MainWindow):
             ret = ret if item < 0 else min(ret, item)
         return ret
     @staticmethod
+    def __to_block_near_crit(msg: Camera_message, target_pos: Point) -> bool:
+        return msg.car_pose[0].dist_to_point(target_pos) <= AC.NAV_BLOCK_APPROACH_MIN_DIST1
+    @staticmethod
     def __to_home_stop_crit(msg: Camera_message) -> bool:
         car_pos, car_angle = msg.car_pose
         return (car_pos + Point(math.cos(car_angle), math.sin(car_angle)) * AC.NAV_HOME_ARM_LENGTH).in_range(*CC.HOME_GRIPPER_RANGE[CC.HOME_NAME])
@@ -513,7 +529,7 @@ class Control_panel(QMainWindow, Ui_MainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    win = Control_panel(no_STM=False, no_camera=True)
+    win = Control_panel(no_STM=False, no_camera=False)
     win.show()
 
     app.exec()
