@@ -16,7 +16,7 @@ constexpr int FORWARD_PARAMS[FORWARD_PARAM_SET_COUNT][5] = {
     {1000, 80, 80, 83, 83}
 };
 // 不同距离前进指令所加的距离调整系数
-constexpr float FORWARD_OFFSET[FORWARD_PARAM_SET_COUNT] = {0, -30, -60, -100, -230};
+constexpr float FORWARD_OFFSET[FORWARD_PARAM_SET_COUNT] = {0, -30, -60, -140, -350};
 
 // 右移指令参数组数
 constexpr int SHIFT_RIGHT_PARAM_SET_COUNT = 5;
