@@ -52,6 +52,8 @@ class Item:
     """物品颜色"""
     coord: Point
     """物品在场地坐标系下的真实坐标"""
+    stable_frames: int
+    """物块连续保持"稳定"的帧数, "稳定"指移动较小且保持可见"""
 
     bind: int
     """与这个物品'粘合'的物品index, 在`state`为`BOUND`时有效"""
@@ -60,11 +62,12 @@ class Item:
     on_car: int
     """物品所在的车辆(暂时不知如何刻画), 在`state`为`ON_CAR`时有效"""
 
-    def __init__(self, index: int, state: Item_state, color: CC.Block_color_name, coord: Point) -> None:
+    def __init__(self, index: int, state: Item_state, color: CC.Block_color_name, coord: Point, *, stb_frame: int = 0) -> None:
         self.index = index
         self.state = state
         self.color = color
         self.coord = coord
+        self.stable_frames = stb_frame
 
         self.bind = -1
         self.in_base = ""
@@ -184,7 +187,7 @@ class Camera:
         cv2.waitKey(-1)
 
         # 生成变换矩阵
-        corner_list = [(38, 626), (1102, 938), (1189, 32), (280, 123)]
+        corner_list = [(43, 553), (1074, 953), (1258, 53), (324, 73)]
         assert len(corner_list) == 4
         self.transform_to_top = cv2.getPerspectiveTransform(np.array(corner_list, dtype=np.float32),
                                             np.array([(0, CC.TRANSFORMED_HEIGHT), (CC.TRANSFORMED_WIDTH, CC.TRANSFORMED_HEIGHT), (CC.TRANSFORMED_WIDTH, 0), (0, 0)], dtype=np.float32))
@@ -255,12 +258,7 @@ class Camera:
     def refresh_image(self, init: bool = False) -> None:
         """阻塞式地刷新图片"""
 
-        while True:
-            success, self.image_rgb = self.camera.read()
-            if success:
-                self.image_time = time.monotonic()
-                break
-            time.sleep(0.1)
+        self.image_time, self.image_rgb = self.camera.read()
 
         # 图片去畸变
         self.image_rgb = cv2.undistort(self.image_rgb, CC.CAMERA_MATRIX, np.array(CC.DISTORTION_COEFFICIENTS))
@@ -297,7 +295,8 @@ class Camera:
                 break
             old_used[link[0]] = new_used[link[1]] = True
             # 继承原index, 状态为可见, 继承原颜色, 采用新坐标
-            merged_list.append(Item(self.item_list[link[0]].index, Item_state.VISIBLE, self.item_list[link[0]].color, new_list[link[1]].coord))
+            stable: int = (link[2] <= CC.BLOCK_STABLE_MAX_MOVE) + self.item_list[link[0]].stable_frames
+            merged_list.append(Item(self.item_list[link[0]].index, Item_state.VISIBLE, self.item_list[link[0]].color, new_list[link[1]].coord, stb_frame=stable))
 
         # 对新列表中未匹配者进行检查
         for new_index, new_item in enumerate(new_list):
@@ -317,12 +316,12 @@ class Camera:
                 self.item_list[sep_index].bind = -1 # 解bind
                 old_used[sep_index] = True
                 # 继承原index, 状态为可见, 继承原颜色, 采用新坐标
-                merged_list.append(Item(self.item_list[sep_index].index, Item_state.VISIBLE, new_item.color, new_item.coord))
+                merged_list.append(Item(self.item_list[sep_index].index, Item_state.VISIBLE, new_item.color, new_item.coord, stb_frame=0))
                 continue
 
             # 否则新建物品, 分配新的index
             new_used[new_index] = True
-            merged_list.append(Item(self.item_index_counter, Item_state.VISIBLE, new_item.color, new_item.coord))
+            merged_list.append(Item(self.item_index_counter, Item_state.VISIBLE, new_item.color, new_item.coord, stb_frame=0))
             self.item_index_counter += 1
 
         # 对旧列表中未匹配者进行检查
@@ -335,12 +334,13 @@ class Camera:
                 # 状态变为不可见, 此外均继承自原物体
                 merged_list.append(old_item)
                 merged_list[-1].state = Item_state.INVISIBLE
+                merged_list[-1].stable_frames = 0
                 continue
             # 检查是否是物体合并
             for new_index, new_item in enumerate(merged_list): # 注意此处是merged_list
                 if new_item.color == old_item.color and old_item.coord.dist_to_point(new_item.coord) <= CC.BLOCK_COMBINE_THRESH:
                     # 继承原index, 状态为BOUND, 继承原颜色, 采用被绑定物体的坐标
-                    merged_list.append(Item(old_item.index, Item_state.BOUND, old_item.color, new_item.coord))
+                    merged_list.append(Item(old_item.index, Item_state.BOUND, old_item.color, new_item.coord, stb_frame=0))
                     break
             # 否则删除物体(无动作)
 
@@ -411,10 +411,10 @@ class Camera:
 
             # 提取平面的小车位姿
             weird_axes: bool = abs(tag_pose[2, 2]) < abs(tag_pose[1, 2]) # 假如旋转矩阵的三个轴排列方式比较奇怪
-            self.car_last_update = self.image_time
             if weird_axes:
                 print(weird_axes, self.car_pose[1])
             else:
+                self.car_last_update = self.image_time
                 self.car_pose = (Point(*utils.pose_translation(tag_pose)[:2]), math.atan2(tag_pose[2, 0] if weird_axes else tag_pose[1, 0], tag_pose[0, 0]))
 
     def __estimate_other_cars(self) -> None:
@@ -436,7 +436,7 @@ class Camera:
         mask = np.zeros_like(threshed, dtype=np.uint8)
         mask[CC.CAR_BORDER_WIDTH:threshed.shape[0]-CC.CAR_BORDER_WIDTH, CC.CAR_BORDER_WIDTH:threshed.shape[1]-CC.CAR_BORDER_WIDTH] = 255
         threshed = mask & threshed
-        cv2.imshow("threshed", threshed * 255), cv2.waitKey(1) # debug区
+        # cv2.imshow("threshed", threshed * 255), cv2.waitKey(1) # debug区
         # 做一些形态学变换
         threshed = cv2.erode(threshed, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (CC.CAR_ERODE_KSIZE, CC.CAR_ERODE_KSIZE))) * 255
         # 提取轮廓
@@ -468,8 +468,8 @@ class Camera:
                 disp_nudge = Point(0, -20) if item.state == Item_state.BOUND else Point(0, 0)
 
                 cv2.circle(self.rendered_picture, round(item.pixel_pos + disp_nudge), 2, disp_color, -1)
-                out_str = "%d (%.2f, %.2f)" % (item.index, *item.coord)
-                cv2.putText(self.rendered_picture, out_str, round(item.pixel_pos + disp_nudge), cv2.FONT_HERSHEY_COMPLEX, 0.5, disp_color)
+                out_str = "%d (%.2f, %.2f) %d" % (item.index, *item.coord, item.stable_frames)
+                cv2.putText(self.rendered_picture, out_str, round(item.pixel_pos + disp_nudge), cv2.FONT_HERSHEY_COMPLEX, 0.4, disp_color)
 
             # 绘制场地
             home_render_pix = round(self.coord_to_pixel(CC.HOME_DISPLAY_POS[CC.HOME_NAME]))

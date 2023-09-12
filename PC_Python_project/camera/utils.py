@@ -2,6 +2,7 @@
 
 import cv2
 import math
+import time
 import threading
 import numpy as np
 
@@ -89,7 +90,7 @@ class Point:
         """返回该二维向量长度"""
         return math.sqrt(self.x*self.x + self.y*self.y)
     def dist_to_point(self, other: "Point") -> float:
-        """计算该点到另一Point对象所表示的点间的欧氏距离"""
+        """计算该点到另一`Point`对象所表示的点间的欧氏距离"""
         assert isinstance(other, Point)
         return (self - other).get_length()
     def angle_to(self, other: "Point") -> float:
@@ -135,6 +136,8 @@ class Realtime_camera(threading.Thread):
     """This allows us to stop the thread gracefully"""
     frame: NDArray[np.uint8]
     """Keeping the newest frame around"""
+    frame_time: float
+    """利用capture.read()读取当前图片完成的时间"""
 
     def __init__(self, capture: cv2.VideoCapture, name='FreshestFrame'):
         self.capture = capture
@@ -143,11 +146,6 @@ class Realtime_camera(threading.Thread):
         self.cond = threading.Condition()
 
         self.running = False
-
-        # passing a sequence number allows read() to NOT block
-        # if the currently available one is exactly the one you ask for
-        self.latestnum = 0
-
         super().__init__(name=name)
         self.start()
 
@@ -166,6 +164,7 @@ class Realtime_camera(threading.Thread):
             # block for fresh frame
             while self.running:
                 rv, img = self.capture.read()
+                frame_time = time.monotonic()
                 if rv:
                     break
             counter += 1
@@ -173,28 +172,19 @@ class Realtime_camera(threading.Thread):
             # publish the frame
             with self.cond: # lock the condition for this operation
                 self.frame = img # type: ignore
-                self.latestnum = counter
+                self.frame_time = frame_time # type: ignore
                 self.cond.notify_all()
 
-    def read(self, wait: bool = True, seqnumber: Optional[int] = None, timeout: Optional[float] = None):
+    def read(self, wait: bool = True, timeout: Optional[float] = None) -> Tuple[float, NDArray[np.uint8]]:
         # with no arguments (wait=True), it always blocks for a fresh frame
         # with wait=False it returns the current frame immediately (polling)
-        # with a seqnumber, it blocks until that frame is available (or no wait at all)
         # with timeout argument, may return an earlier frame;
         #   may even be (0,None) if nothing received yet
 
         with self.cond:
             if wait:
-                if seqnumber is None:
-                    seqnumber = self.latestnum+1
-                if seqnumber < 1:
-                    seqnumber = 1
-
-                rv = self.cond.wait_for(lambda: self.latestnum >= seqnumber, timeout=timeout)
-                if not rv:
-                    return (self.latestnum, self.frame)
-
-            return (self.latestnum, self.frame)
+                rv = self.cond.wait(timeout)
+            return (self.frame_time, self.frame)
 
 def construct_pose_cv2(rvec: Shaped_array[Literal["(3,)"], np.float64], tvec: Shaped_array[Literal["(3,)"], np.float64]) -> Shaped_NDArray[Literal["(4,4)"], np.float64]:
     """从cv2返回的旋转向量`rvec`与平移向量`tvec`构造4x4位姿变换矩阵"""

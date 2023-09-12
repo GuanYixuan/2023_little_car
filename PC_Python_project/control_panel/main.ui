@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1299</width>
+    <width>1413</width>
     <height>914</height>
    </rect>
   </property>
@@ -384,7 +384,7 @@
      <rect>
       <x>10</x>
       <y>10</y>
-      <width>931</width>
+      <width>941</width>
       <height>701</height>
      </rect>
     </property>
@@ -401,9 +401,9 @@
    <widget class="QFrame" name="status_frame">
     <property name="geometry">
      <rect>
-      <x>570</x>
+      <x>560</x>
       <y>720</y>
-      <width>421</width>
+      <width>401</width>
       <height>141</height>
      </rect>
     </property>
@@ -532,7 +532,7 @@
       <rect>
        <x>210</x>
        <y>9</y>
-       <width>201</width>
+       <width>181</width>
        <height>51</height>
       </rect>
      </property>
@@ -608,7 +608,7 @@
       <rect>
        <x>210</x>
        <y>70</y>
-       <width>201</width>
+       <width>181</width>
        <height>25</height>
       </rect>
      </property>
@@ -648,10 +648,10 @@
    <widget class="QWidget" name="layoutWidget">
     <property name="geometry">
      <rect>
-      <x>950</x>
+      <x>970</x>
       <y>10</y>
-      <width>341</width>
-      <height>611</height>
+      <width>441</width>
+      <height>851</height>
      </rect>
     </property>
     <layout class="QVBoxLayout" name="log_panel_frame">
@@ -704,7 +704,7 @@
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>1299</width>
+     <width>1413</width>
      <height>23</height>
     </rect>
    </property>

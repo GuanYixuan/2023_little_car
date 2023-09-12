@@ -5,6 +5,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import math
 import time
+import random
 import threading
 import numpy as np
 from copy import deepcopy
@@ -24,6 +25,7 @@ from communication import STM32_INSTRUCTION_LENGTH
 from communication import GRAB_SUCCESS_CONTENT, PLACE_SUCCESS_CONTENT
 from camera.utils import Point
 from camera.camera import Camera, Camera_message
+from camera.constants import Item_state
 import camera.constants as CC # camera constants
 import constants as AC # algorithm constants
 
@@ -56,7 +58,7 @@ class Control_panel(QMainWindow, Ui_MainWindow):
     stm32_serial: Serial_handler
     """STM32串口管理对象"""
     camera_cond: Condition
-    camera_queue: Queue
+    camera_queue: "Queue[Camera_message]"
     camera_message: Camera_message
     """最新的场外相机信息"""
 
@@ -205,7 +207,9 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                     self.camera_cond.wait()
             if not self.camera_queue.empty():
                 self.camera_message = self.camera_queue.get_nowait()
-                self.camera_signal.emit("")
+                if self.camera_queue.empty():
+                    self.camera_signal.emit("")
+
     @staticmethod
     def __array_to_pixmap(img_array: NDArray[np.uint8]) -> QPixmap:
         y, x, _ = img_array.shape
@@ -288,8 +292,15 @@ class Control_panel(QMainWindow, Ui_MainWindow):
 
     # 暂且寄生在control panel下的主算法
     def __main_algorithm(self) -> None:
-        collected_blocks: int = 0
+        grab_fail_times: int = 0
         while self.alg_running:
+            # 如果挂多了, 不妨后退变换角度
+            if grab_fail_times >= 3:
+                self.stm32_serial.inst_shift(-300, 50 if random.random() > 0.5 else -50)
+                self.__wait_for_result("shift")
+                grab_fail_times = 0
+                continue
+
             # 缓存一份, 避免data race
             self.__log_once("[主算法] 刷新信息", COMMAND_COLOR)
             camera_message: Camera_message = deepcopy(self.camera_message)
@@ -298,7 +309,7 @@ class Control_panel(QMainWindow, Ui_MainWindow):
             closest_id: int = -1
             closest_length: float = 1e9
             for ind, item in enumerate(camera_message.item_list):
-                if item.in_base == CC.HOME_NAME: # 不抓家里的
+                if item.in_base == CC.HOME_NAME or item.state == Item_state.BOUND: # 不抓家里的, 不抓绑定的
                     continue
                 collide: bool = False
                 for other_ind, other in enumerate(camera_message.item_list):
@@ -310,13 +321,15 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                         collide = True
                         break
                 if not collide:
-                    path_length: float = item.coord.dist_to_point(car_pos) + item.coord.dist_to_point(CC.HOME_ENTER_POSE[CC.HOME_NAME][0])
+                    path_length: float = item.coord.dist_to_point(car_pos)
+                    path_length += 10000 if item.stable_frames < 10 else 0 # 最后抓不稳定/不可见的
                     if path_length < closest_length:
                         closest_id = ind
                         closest_length = path_length
 
             if closest_id < 0:
                 self.__log_once("[主算法] 未找到有效目标", COMMAND_COLOR)
+                time.sleep(1)
                 continue
             else:
                 self.__log_once("[主算法] 向目标%s移动" % str(camera_message.item_list[closest_id].coord), COMMAND_COLOR)
@@ -337,6 +350,7 @@ class Control_panel(QMainWindow, Ui_MainWindow):
             self.__log_once("[主算法] 进入抓取模式", COMMAND_COLOR)
             self.stm32_serial.inst_grab_mode()
             if not self.__wait_for_result("grab"):
+                grab_fail_times += 1
                 continue
 
             # 导航回家
@@ -373,10 +387,6 @@ class Control_panel(QMainWindow, Ui_MainWindow):
             self.__log_once("[主算法] 放置成功, 离开", COMMAND_COLOR)
             self.stm32_serial.inst_shift(-200, 150)
             self.__wait_for_result("shift")
-
-            collected_blocks += 1
-            if collected_blocks >= 10:
-                break
     def __wait_for_result(self, command_type: Literal["grab", "place", "shift", "steer"]) -> bool:
         """阻塞式地等待指令的结果"""
         ret: bool = True
@@ -421,6 +431,18 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                 return adjust_count
             # 否则旋转后进行移动
             if not shift_preferred:
+                # 比较抽象地远离边缘
+                if not car_pos.in_range((AC.NAV_COLLISION_ARM_LENGTH, CC.FIELD_SIZE[0] - AC.NAV_COLLISION_ARM_LENGTH), (AC.NAV_COLLISION_ARM_LENGTH, CC.FIELD_SIZE[1] - AC.NAV_COLLISION_ARM_LENGTH)):
+                    if car_pos.x < AC.NAV_COLLISION_ARM_LENGTH:
+                        self.stm32_serial.inst_shift(*round(Point(math.cos(car_angle), math.sin(car_angle)) * AC.NAV_WALL_CLEAR_MOVE_DIST * 1000))
+                    elif car_pos.y < AC.NAV_COLLISION_ARM_LENGTH:
+                        self.stm32_serial.inst_shift(*round(Point(math.sin(car_angle), -math.cos(car_angle)) * AC.NAV_WALL_CLEAR_MOVE_DIST * 1000))
+                    elif car_pos.x > CC.FIELD_SIZE[0] - AC.NAV_COLLISION_ARM_LENGTH:
+                        self.stm32_serial.inst_shift(*round(Point(math.cos(car_angle), math.sin(car_angle)) * -AC.NAV_WALL_CLEAR_MOVE_DIST * 1000))
+                    elif car_pos.y > CC.FIELD_SIZE[1] - AC.NAV_COLLISION_ARM_LENGTH:
+                        self.stm32_serial.inst_shift(*round(Point(-math.sin(car_angle), math.cos(car_angle)) * AC.NAV_WALL_CLEAR_MOVE_DIST * 1000))
+                    self.__wait_for_result("shift")
+                    continue
                 if self.__nav_turn_to(target_angle, AC.NAV_GOTO_ANGLE_THRESH, max_adjust=10, stop_crit=stop_crit):
                     continue
                 # 计算前进距离
@@ -491,7 +513,7 @@ class Control_panel(QMainWindow, Ui_MainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    win = Control_panel(no_STM=False, no_camera=False)
+    win = Control_panel(no_STM=False, no_camera=True)
     win.show()
 
     app.exec()
