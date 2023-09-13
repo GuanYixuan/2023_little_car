@@ -3,6 +3,7 @@
 import os, sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import cv2
 import math
 import time
 import random
@@ -10,6 +11,7 @@ import threading
 import numpy as np
 from copy import deepcopy
 import multiprocessing
+from queue import Empty
 from multiprocessing.queues import Queue
 from multiprocessing.synchronize import Condition
 
@@ -43,6 +45,8 @@ SHIFT_STEP_LENGTH: int = 250
 COMMAND_COLOR: int = 0x000000
 SUCCESS_COLOR: int = 0x009000
 FAILED_COLOR: int = 0xa00000
+
+CART_STRETAGY: bool = False
 
 def camera_process(cond: Optional[Condition] = None, queue: Optional[Queue] = None) -> None:
     cam = Camera(cond=cond, queue=queue)
@@ -181,10 +185,7 @@ class Control_panel(QMainWindow, Ui_MainWindow):
         textCursor.insertText("[%s] %s\n" % (time_str, raw), charFormat)
         textCursor.setPosition(old_position)
     def __log_updator(self) -> None:
-        """`log_panel`线程, 接收并添加新信息
-
-        同时承接主算法阻塞式等待消息的功能
-        """
+        """`log_panel`线程, 接收并添加新信息"""
         while self.running:
             if len(self.stm32_serial.message_queue) == 0:
                 with self.stm32_serial.recv_cond:
@@ -293,7 +294,37 @@ class Control_panel(QMainWindow, Ui_MainWindow):
     # 暂且寄生在control panel下的主算法
     def __main_algorithm(self) -> None:
         grab_fail_times: int = 0
+        status: str = "" # 当前状态, 仅在对付有框小车时生效
         while self.alg_running:
+            # 缓存一份, 避免data race
+            self.__log_once("[主算法] 刷新信息", COMMAND_COLOR)
+            camera_message: Camera_message = deepcopy(self.camera_message)
+            car_pos, car_angle = camera_message.car_pose
+
+            # 占家状态
+            if status == "home" and (CC.ENEMY_HOME_NAME is not None):
+                if car_pos.dist_to_point(CC.HOME_OCCUPY_POS[CC.ENEMY_HOME_NAME]) < 0.1:
+                    ang_d1 = Point.angle_between(car_angle, math.radians(90))
+                    ang_d2 = Point.angle_between(car_angle, -math.radians(90))
+                    if min(abs(ang_d1), abs(ang_d2)) <= math.radians(10):
+                        time.sleep(1)
+                        continue
+                    elif abs(ang_d1) < abs(ang_d2): self.__nav_turn_to(math.radians(90), math.radians(10))
+                    else: self.__nav_turn_to(-math.radians(90), math.radians(10))
+                    self.__log_once("[主算法] 转向正确的角度", COMMAND_COLOR)
+                else:
+                    self.__log_once("[主算法] 向家导航", COMMAND_COLOR)
+                    self.__nav_goto(CC.HOME_OCCUPY_POS[CC.ENEMY_HOME_NAME], 0.1)
+                continue
+
+            # 对付有框小车时, 检查是否能刷新状态
+            if CART_STRETAGY:
+                bool_list = [(item.in_base == "") and (item.state == Item_state.VISIBLE) and item.coord.in_range(*AC.ST_AVAIL_BLOCK_LIMIT) for item in camera_message.item_list]
+                if np.count_nonzero(bool_list) == 0:
+                    self.__log_once("[主算法] 进入居家状态", COMMAND_COLOR)
+                    status = "home"
+                    continue
+
             # 如果挂多了, 不妨后退变换角度
             if grab_fail_times >= 3:
                 self.stm32_serial.inst_shift(-300, 50 if random.random() > 0.5 else -50)
@@ -301,38 +332,45 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                 grab_fail_times = 0
                 continue
 
-            # 缓存一份, 避免data race
-            self.__log_once("[主算法] 刷新信息", COMMAND_COLOR)
-            camera_message: Camera_message = deepcopy(self.camera_message)
-            car_pos, car_angle = camera_message.car_pose
-
-            closest_id: int = -1
-            closest_length: float = 1e9
+            best_index: int = -1
+            best_loss: float = 1e9
+            colliding: bool = False
             for ind, item in enumerate(camera_message.item_list):
-                if item.in_base == CC.HOME_NAME or item.state == Item_state.BOUND: # 不抓家里的, 不抓绑定的
+                item_loss: float = 0
+                if item.in_base == CC.HOME_NAME: # 不抓家里的
                     continue
-                collide: bool = False
-                for other_ind, other in enumerate(camera_message.item_list):
-                    if ind == other_ind:
-                        continue
-                    d1 = other.coord.dist_to_segment(car_pos, item.coord) # 小车->物块
-                    d2 = other.coord.dist_to_segment(item.coord, CC.HOME_ENTER_POSE[CC.HOME_NAME][0]) # 物块->终点
-                    if d1 < AC.NAV_ITEM_COLLIDE_THRESH or d2 < AC.NAV_ITEM_COLLIDE_THRESH:
-                        collide = True
-                        break
-                if not collide:
-                    path_length: float = item.coord.dist_to_point(car_pos)
-                    path_length += 10000 if item.stable_frames < 10 else 0 # 最后抓不稳定/不可见的
-                    if path_length < closest_length:
-                        closest_id = ind
-                        closest_length = path_length
+                if not item.coord.in_range(*AC.ST_AVAIL_BLOCK_LIMIT): # 硬性边缘区域限制
+                    continue
 
-            if closest_id < 0:
+                # 不稳定/不可见惩罚(数量级6)
+                if item.stable_frames < 10: item_loss += 1e6
+
+                # 碰撞惩罚(数量级5)
+                line_mask = np.zeros_like(camera_message.car_mask)
+                cv2.line(line_mask, round(Camera.coord_to_pixel(car_pos)), round(item.pixel_pos), (255,), 2)
+                collide = np.count_nonzero(camera_message.car_mask & line_mask) > 0
+                if collide: item_loss += 1e5
+
+                # 假如在"第一优先区域"中
+                if item.coord.in_range(AC.ST_TARGET_AREA_LIMIT_X[CC.HOME_NAME]):
+                    item_loss -= item.coord.dist_to_point(CC.HOME_CORNER_POS[CC.HOME_NAME]) # loss为负的距离(远者优先)
+                else:
+                    # 第二优先级惩罚(数量级4)
+                    item_loss += 1e4
+                    item_loss += item.coord.dist_to_point(CC.HOME_CORNER_POS[CC.HOME_NAME]) # loss为距离
+
+                # 更新"最优的物体"
+                if item_loss < best_loss:
+                    best_index = ind
+                    best_loss = item_loss
+                    colliding = collide
+
+            if best_index < 0:
                 self.__log_once("[主算法] 未找到有效目标", COMMAND_COLOR)
                 time.sleep(1)
                 continue
             else:
-                self.__log_once("[主算法] 向目标%s移动" % str(camera_message.item_list[closest_id].coord), COMMAND_COLOR)
+                self.__log_once("[主算法] 向目标%s移动" % str(camera_message.item_list[best_index].coord), COMMAND_COLOR)
 
             # 导航过去前, 先比较抽象地远离边缘
             if not car_pos.in_range((AC.NAV_COLLISION_ARM_LENGTH, CC.FIELD_SIZE[0] - AC.NAV_COLLISION_ARM_LENGTH), (AC.NAV_COLLISION_ARM_LENGTH, CC.FIELD_SIZE[1] - AC.NAV_COLLISION_ARM_LENGTH)):
@@ -348,7 +386,7 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                 continue # 要求重新刷新
 
             # 导航过去
-            target_item = camera_message.item_list[closest_id]
+            target_item = camera_message.item_list[best_index]
             target_coord = target_item.coord
             self.alg_status_update_signal.emit("接近物块")
             vec_CI = target_item.coord - car_pos
@@ -361,10 +399,10 @@ class Control_panel(QMainWindow, Ui_MainWindow):
 
                 if near_wall_adjuster.get_length() >= 0.5: # 如果物块接近墙
                     self.__nav_goto(target_coord + near_wall_adjuster * AC.NAV_BLOCK_APPROACH_DIST1 / near_wall_adjuster.get_length(), AC.NAV_BLOCK_APPROACH_THRESH1,
-                                    stop_crit=lambda msg: self.__to_block_near_crit(msg, target_coord))
+                                    stop_crit=lambda msg: self.__to_block_near_crit(msg, target_coord), max_single_action_dist=0.999 if colliding else 100)
                 else: # 如果物块不接近墙的话
                     self.__nav_goto(car_pos + vec_CI * (1 - AC.NAV_BLOCK_APPROACH_DIST1 / vec_CI.get_length()), AC.NAV_BLOCK_APPROACH_THRESH1,
-                                    stop_crit=lambda msg: self.__to_block_near_crit(msg, target_coord))
+                                    stop_crit=lambda msg: self.__to_block_near_crit(msg, target_coord), max_single_action_dist=0.999 if colliding else 100)
                 continue # 要求重新刷新
             if vec_CI.get_length() > 0.33:
                 self.__nav_goto(car_pos + vec_CI * (1 - 0.28 / vec_CI.get_length()), 0.05)
@@ -395,14 +433,16 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                 assert self.__to_home_near_crit(self.camera_message)
                 car_pos, car_angle = self.camera_message.car_pose
 
-                min_turn : int = 10000
+                min_turn: int = 1000
                 for deg_add in range(-180, 185, 5):
                     if (car_pos + Point(math.cos(car_angle + math.radians(deg_add)), math.sin(car_angle + math.radians(deg_add))) * AC.NAV_HOME_ARM_LENGTH).in_range(*CC.HOME_GRIPPER_RANGE[CC.HOME_NAME]):
                         if abs(deg_add) < abs(min_turn):
                             min_turn = deg_add
-                assert abs(min_turn) <= 180
-                self.stm32_serial.inst_steer(min_turn)
-                self.__wait_for_result("steer")
+                if abs(min_turn) <= 180:
+                    self.stm32_serial.inst_steer(min_turn)
+                    self.__wait_for_result("steer")
+                else:
+                    self.__nav_turn_to(car_pos.angle_to(CC.HOME_CORNER_POS[CC.HOME_NAME]), math.radians(10))
 
             self.alg_status_update_signal.emit("放置物块")
             self.__log_once("[主算法] 进入放置模式", COMMAND_COLOR)
@@ -413,11 +453,17 @@ class Control_panel(QMainWindow, Ui_MainWindow):
             self.stm32_serial.inst_shift(-200, 150)
             self.__wait_for_result("shift")
     def __wait_for_result(self, command_type: Literal["grab", "place", "shift", "steer"]) -> bool:
-        """阻塞式地等待指令的结果"""
-        ret: bool = True
-        while True:
-            message = self.__alg_message_queue.get().decode()
+        """阻塞式地等待指令的结果, 不同指令的超时时间由`AC.WAIT_RESULT_TIMEOUT`常量指定"""
+        ret: bool = False
+        timeout: float = AC.WAIT_RESULT_TIMEOUT[command_type]
+        start_time: float = time.monotonic()
+        while time.monotonic() - start_time < timeout:
+            try:
+                message = self.__alg_message_queue.get(timeout=1).decode()
+            except Empty:
+                continue
             if (command_type == "shift" or command_type == "steer") and message.startswith("SUCCESS: %s" % command_type):
+                ret = True
                 break
             if len(message) != STM32_INSTRUCTION_LENGTH - 2:
                 continue
@@ -427,13 +473,17 @@ class Control_panel(QMainWindow, Ui_MainWindow):
             if message.startswith("PL") and command_type == "place":
                 ret = (message == PLACE_SUCCESS_CONTENT)
                 break
+        if time.monotonic() - start_time >= timeout:
+            self.__log_once("[主算法] 等待指令结果超时", FAILED_COLOR)
+            return ret
         time.sleep(AC.WAIT_SUCC_DELAY)
         wait_time = time.monotonic()
         while self.camera_message.car_last_update < wait_time:
             with self.camera_cond:
                 self.camera_cond.wait()
         return ret
-    def __nav_goto(self, target_pos: Point, thresh: float, *, shift_preferred: bool = False, max_adjust: int = 10000, stop_crit: Optional[Callable[[Camera_message], bool]] = None) -> int:
+    def __nav_goto(self, target_pos: Point, thresh: float, *, shift_preferred: bool = False, max_adjust: int = 10000,
+                   stop_crit: Optional[Callable[[Camera_message], bool]] = None, max_single_action_dist: float = 100) -> int:
         """让小车行驶至指定位置
 
         Args:
@@ -441,6 +491,7 @@ class Control_panel(QMainWindow, Ui_MainWindow):
             `thresh` (float): 允许的位置偏差, 单位为米
             `shift_preferred` (bool, optional): 是否采用左右平移的方式进行移动, 默认为否
             `stop_crit` (Callable[[Camera_message], bool], optional): 提前停止的条件, 默认不提前停止
+            `max_single_action_dist` (float, optional): 单次移动的最大距离, 注意此参数不会覆盖`AC.NAV_MAX_FORWARD`的限制作用, 默认无限制
         """
         adjust_count: int = 0
         while adjust_count < max_adjust:
@@ -459,7 +510,7 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                 if self.__nav_turn_to(target_angle, AC.NAV_GOTO_ANGLE_THRESH, max_adjust=10, stop_crit=stop_crit):
                     continue
                 # 计算前进距离
-                limited_dist = min(target_distance, AC.NAV_MAX_FORWARD)
+                limited_dist = min(target_distance, AC.NAV_MAX_FORWARD, max_single_action_dist)
                 limited_dist = min(limited_dist, max(self.__check_wall_collision_dist(car_pos, target_angle) - AC.NAV_COLLISION_ARM_LENGTH - AC.NAV_WALL_COLLIDE_THRESH, 0))
                 limited_dist = round(limited_dist * 1000)
                 # if limited_dist >= 1000: input("确认指令: 前进%d" % limited_dist)
@@ -472,7 +523,7 @@ class Control_panel(QMainWindow, Ui_MainWindow):
                 if self.__nav_turn_to(target_angle, AC.NAV_GOTO_ANGLE_THRESH, max_adjust=10, stop_crit=stop_crit):
                     continue
                 # 计算平移距离
-                limited_dist = min(target_distance, AC.NAV_MAX_SHIFT)
+                limited_dist = min(target_distance, AC.NAV_MAX_SHIFT, max_single_action_dist)
                 limited_dist = min(limited_dist, max(self.__check_wall_collision_dist(car_pos, target_angle) - AC.NAV_WALL_COLLIDE_THRESH, 0)) # 不再加上夹爪长度
                 limited_dist = round(limited_dist * 1000 * shift_sign)
                 input("确认指令: 右移%d" % limited_dist)

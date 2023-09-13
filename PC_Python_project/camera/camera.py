@@ -100,6 +100,9 @@ class Camera_message:
     rendered_picture: NDArray[np.uint8]
     """叠加显示了各元素的图像"""
 
+    car_mask: NDArray[np.uint8]
+    """被认定为"接近小车"的区域"""
+
     def __init__(self, _timestamp: float) -> None:
         self.timestamp = _timestamp
 
@@ -125,8 +128,6 @@ class Camera:
     car_last_update: float
     """最后一次看见小车的时间, 采用time.monotonic()"""
     car_mask: NDArray[np.uint8]
-    """被认定为小车的区域"""
-    car_near_mask: NDArray[np.uint8]
     """被认定为"接近小车"的区域"""
 
     image_time: float
@@ -187,7 +188,7 @@ class Camera:
         cv2.waitKey(-1)
 
         # 生成变换矩阵
-        corner_list = [(43, 553), (1074, 953), (1258, 53), (324, 73)]
+        corner_list = [(29, 803), (1168, 959), (1067, 49), (211, 258)]
         assert len(corner_list) == 4
         self.transform_to_top = cv2.getPerspectiveTransform(np.array(corner_list, dtype=np.float32),
                                             np.array([(0, CC.TRANSFORMED_HEIGHT), (CC.TRANSFORMED_WIDTH, CC.TRANSFORMED_HEIGHT), (CC.TRANSFORMED_WIDTH, 0), (0, 0)], dtype=np.float32))
@@ -302,24 +303,8 @@ class Camera:
         for new_index, new_item in enumerate(new_list):
             if new_used[new_index]:
                 continue
-            # 首先检查是否为“卸货”
-            # TODO
 
-            # 其次检查是否是一次"分离"
-            sep_index: int = -1
-            for old_index, old_item in enumerate(self.item_list):
-                if old_item.bind < 0 or old_item.color != new_item.color or old_item.coord.dist_to_point(new_item.coord) > CC.BLOCK_COMBINE_THRESH:
-                    continue
-                sep_index = old_index
-                break
-            if sep_index >= 0:
-                self.item_list[sep_index].bind = -1 # 解bind
-                old_used[sep_index] = True
-                # 继承原index, 状态为可见, 继承原颜色, 采用新坐标
-                merged_list.append(Item(self.item_list[sep_index].index, Item_state.VISIBLE, new_item.color, new_item.coord, stb_frame=0))
-                continue
-
-            # 否则新建物品, 分配新的index
+            # 新建物品, 分配新的index
             new_used[new_index] = True
             merged_list.append(Item(self.item_index_counter, Item_state.VISIBLE, new_item.color, new_item.coord, stb_frame=0))
             self.item_index_counter += 1
@@ -336,25 +321,12 @@ class Camera:
                 merged_list[-1].state = Item_state.INVISIBLE
                 merged_list[-1].stable_frames = 0
                 continue
-            # 检查是否是物体合并
-            for new_index, new_item in enumerate(merged_list): # 注意此处是merged_list
-                if new_item.color == old_item.color and old_item.coord.dist_to_point(new_item.coord) <= CC.BLOCK_COMBINE_THRESH:
-                    # 继承原index, 状态为BOUND, 继承原颜色, 采用被绑定物体的坐标
-                    merged_list.append(Item(old_item.index, Item_state.BOUND, old_item.color, new_item.coord, stb_frame=0))
-                    break
             # 否则删除物体(无动作)
 
         # 自动继承在车上的物块
         for old_item in self.item_list:
             if old_item.state == Item_state.ON_CAR:
                 merged_list.append(old_item)
-
-        # 若被绑定物体未消失且仍在距离内, 则自动继承bind, 否则删除
-        for old_index, old_item in enumerate(self.item_list):
-            if old_item.state != Item_state.BOUND:
-                continue
-            if any(map(lambda item: (item.index == old_item.bind) and old_item.coord.dist_to_point(item.coord) <= CC.BLOCK_COMBINE_THRESH, self.item_list)):
-                 merged_list.append(old_item)
 
         self.item_list = merged_list
     def __find_items(self) -> List[Item]:
@@ -389,6 +361,8 @@ class Camera:
                     continue
 
                 # 利用car_mask排除
+                point.x = min(max(point.x, 0), CC.TRANSFORMED_WIDTH)
+                point.y = min(max(point.y, 0), CC.TRANSFORMED_HEIGHT)
                 if (not point.in_range((0, CC.TRANSFORMED_WIDTH), (0, CC.TRANSFORMED_HEIGHT))) or self.car_mask[point[1], point[0]] == 0:
                     ret.append(Item(-1, Item_state.VISIBLE, color, self.pixel_to_coord(Point(*transformed_position))))
 
@@ -465,11 +439,10 @@ class Camera:
             # 绘制物品坐标
             for item in self.item_list:
                 disp_color = CC.BLOCK_DISPLAY_COLOR[item.state]
-                disp_nudge = Point(0, -20) if item.state == Item_state.BOUND else Point(0, 0)
 
-                cv2.circle(self.rendered_picture, round(item.pixel_pos + disp_nudge), 2, disp_color, -1)
+                cv2.circle(self.rendered_picture, round(item.pixel_pos), 2, disp_color, -1)
                 out_str = "%d (%.2f, %.2f) %d" % (item.index, *item.coord, item.stable_frames)
-                cv2.putText(self.rendered_picture, out_str, round(item.pixel_pos + disp_nudge), cv2.FONT_HERSHEY_COMPLEX, 0.4, disp_color)
+                cv2.putText(self.rendered_picture, out_str, round(item.pixel_pos), cv2.FONT_HERSHEY_COMPLEX, 0.4, disp_color)
 
             # 绘制场地
             home_render_pix = round(self.coord_to_pixel(CC.HOME_DISPLAY_POS[CC.HOME_NAME]))
@@ -483,12 +456,11 @@ class Camera:
                             home_render_pix, cv2.FONT_HERSHEY_COMPLEX, 0.5, CC.ENEMY_HOME_DISPLAY_COLOR)
 
             # 绘制小车位置与方向
-            if hasattr(self, "car_pose"):
-                car_pixel_pos = self.car_pose[0] / scale_factor
-                car_pixel_pos.y = CC.TRANSFORMED_HEIGHT - car_pixel_pos.y
-                cv2.circle(self.rendered_picture, round(car_pixel_pos), 6, CC.CAR_DISPLAY_COLOR, -1)
-                cv2.arrowedLine(self.rendered_picture, round(car_pixel_pos),
-                                round(car_pixel_pos + Point(math.cos(self.car_pose[1]), -math.sin(self.car_pose[1])) * 50), CC.CAR_DISPLAY_COLOR, 2, tipLength=0.2)
+            car_pixel_pos = self.car_pose[0] / scale_factor
+            car_pixel_pos.y = CC.TRANSFORMED_HEIGHT - car_pixel_pos.y
+            cv2.circle(self.rendered_picture, round(car_pixel_pos), 6, CC.CAR_DISPLAY_COLOR, -1)
+            cv2.arrowedLine(self.rendered_picture, round(car_pixel_pos),
+                            round(car_pixel_pos + Point(math.cos(self.car_pose[1]), -math.sin(self.car_pose[1])) * 50), CC.CAR_DISPLAY_COLOR, 2, tipLength=0.2)
 
             # 回传消息
             if isinstance(self.message_queue, Queue):
@@ -497,6 +469,10 @@ class Camera:
                 msg.car_pose = self.car_pose
                 msg.car_last_update = self.car_last_update
                 msg.rendered_picture = self.rendered_picture
+                msg.car_mask = self.car_mask.copy()
+                if self.coord_to_pixel(self.car_pose[0]).self_round().in_range((0, CC.TRANSFORMED_WIDTH), (0, CC.TRANSFORMED_HEIGHT)):
+                    cv2.floodFill(msg.car_mask, None, round(self.coord_to_pixel(self.car_pose[0])), (0,), 0, 0)
+                # cv2.imshow("threshed", msg.car_mask), cv2.waitKey(1)
                 self.message_queue.put(msg)
 
             # 叠加显示完毕, 通知其它处理程序

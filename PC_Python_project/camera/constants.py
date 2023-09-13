@@ -46,12 +46,11 @@ class Item_state(Enum):
     VISIBLE = 1
     INVISIBLE = 2
     ON_CAR = 3
-    BOUND = 4
 GAUSS_BLUR_KSIZE: int = 3
 """预先进行的高斯模糊的Kernel size"""
 Block_color_name = Literal["yellow", "red"]
 """所有的物块颜色"""
-BLOCK_HSV_LOWERBOUND: Dict[Block_color_name, List[Tuple[int, int, int]]] = {"yellow": [(17, 96, 100)], "red": [(0, 100, 80), (170, 112, 80)]}
+BLOCK_HSV_LOWERBOUND: Dict[Block_color_name, List[Tuple[int, int, int]]] = {"yellow": [(17, 96, 100)], "red": [(0, 90, 80), (170, 100, 80)]}
 """物块色彩HSV下界"""
 BLOCK_HSV_UPPERBOUND: Dict[Block_color_name, List[Tuple[int, int, int]]] = {"yellow": [(33, 255, 255)], "red": [(13, 255, 255), (255, 255, 255)]}
 """物块色彩HSV上界"""
@@ -65,7 +64,7 @@ BLOCK_OUTLIER_THRESH: float = 0.03
 """物块'在界外'的判定阈值"""
 BLOCK_COMBINE_THRESH: float = 0.08
 """允许物块'粘合'与'分离'的距离阈值"""
-BLOCK_DISPLAY_COLOR: Dict[Item_state, Tuple[int, int ,int]] = {Item_state.VISIBLE: (0, 255, 0), Item_state.INVISIBLE: (0, 192, 192), Item_state.ON_CAR: (192, 0, 192), Item_state.BOUND: (192, 192, 0)}
+BLOCK_DISPLAY_COLOR: Dict[Item_state, Tuple[int, int ,int]] = {Item_state.VISIBLE: (0, 255, 0), Item_state.INVISIBLE: (0, 192, 192), Item_state.ON_CAR: (192, 0, 192)}
 """不同状态物块在渲染图中的标记颜色"""
 
 # 小车定位相关常数
@@ -75,7 +74,7 @@ CAR_DILATE_KSIZE: int = 40
 """识别其它小车时, 进行的膨胀操作的核大小(用于刻画"在车附近")"""
 CAR_COLOR_THRESH: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]] = [((12, 6, 150), (29, 35, 250)), ((0, 0, 245), (255, 255, 255)), ((0, 0, 170), (20, 15, 230)), ((28, 0, 180), (32, 15, 210))]
 """用于识别其它小车的色彩阈值(此常数定义的是背景的阈值)"""
-CAR_HOME_COLOR: Tuple[Tuple[int, int, int], Tuple[int, int, int]] = ((50, 10, 10), (140, 140, 50))
+CAR_HOME_COLOR: Tuple[Tuple[int, int, int], Tuple[int, int, int]] = ((50, 10, 10), (140, 140, 60))
 """识别其它小车时, 目标区域的背景色"""
 CAR_SIZE_THRESH: int = 2500
 """识别其它小车的大小阈值"""
@@ -87,7 +86,7 @@ CAR_DISPLAY_COLOR: Tuple[int, int, int] = (0, 255, 0)
 # 目标区域相关常数
 Home_names = Literal["lb", "rt"]
 """所有可能的目标区域名称"""
-HOME_VERTEX: Dict[Home_names, Point] = {"lb": Point(0.2, 0.3), "rt": Point(2.8, 1.7)}
+HOME_VERTEX: Dict[Home_names, Point] = {"lb": Point(0.25, 0.35), "rt": Point(2.75, 1.65)}
 """目标区域顶点位置, 用在Camera中"""
 HOME_DISPLAY_POS: Dict[Home_names, Point] = {"lb": Point(0.05, 0.05), "rt": Point(2.8, 1.95)}
 """目标区域的显示位置, 用在Camera中"""
@@ -99,9 +98,12 @@ HOME_GRIPPER_RANGE: Dict[Home_names, Tuple[Tuple[float, float], Tuple[float, flo
 """目标区域的范围, 用于判断小车的夹爪是否已到达放置区"""
 HOME_NEAR_RANGE: Dict[Home_names, Tuple[Tuple[float, float], Tuple[float, float]]] = {"lb": ((-np.inf, 0.4), (-np.inf, 0.45)), "rt": ((2.6, np.inf), (1.55, np.inf))}
 """理论上能够通过转向让夹爪进入目标区域的范围"""
+HOME_CORNER_POS: Dict[Home_names, Point] = {"lb": Point(0, 0), "rt": Point(3.0, 2.0)}
+"""目标区域的角落坐标"""
+HOME_OCCUPY_POS: Dict[Home_names, Point] = {"lb": Point(0.2, 0.2), "rt": Point(2.8, 1.8)}
 
 HOME_NAME: Home_names = "lb"
-ENEMY_HOME_NAME: Optional[Home_names] = None
+ENEMY_HOME_NAME: Optional[Home_names] = "rt"
 
 HOME_DISPLAY_COLOR: Tuple[int, int, int] = (255, 80, 80)
 ENEMY_HOME_DISPLAY_COLOR: Tuple[int, int, int] = (80, 80, 255)
