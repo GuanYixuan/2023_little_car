@@ -72,7 +72,7 @@ CAR_ERODE_KSIZE: int = 2
 """识别其它小车时, 进行的腐蚀操作的核大小"""
 CAR_DILATE_KSIZE: int = 40
 """识别其它小车时, 进行的膨胀操作的核大小(用于刻画"在车附近")"""
-CAR_COLOR_THRESH: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]] = [((12, 6, 150), (29, 35, 250)), ((0, 0, 245), (255, 255, 255)), ((0, 0, 170), (20, 15, 230)), ((28, 0, 180), (32, 15, 210))]
+CAR_COLOR_THRESH: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]] = [((12, 6, 130), (29, 35, 250)), ((0, 0, 245), (255, 255, 255)), ((0, 0, 170), (20, 15, 230)), ((28, 0, 180), (32, 15, 210))]
 """用于识别其它小车的色彩阈值(此常数定义的是背景的阈值)"""
 CAR_HOME_COLOR: Tuple[Tuple[int, int, int], Tuple[int, int, int]] = ((50, 10, 10), (140, 140, 60))
 """识别其它小车时, 目标区域的背景色"""
@@ -102,8 +102,8 @@ HOME_CORNER_POS: Dict[Home_names, Point] = {"lb": Point(0, 0), "rt": Point(3.0, 
 """目标区域的角落坐标"""
 HOME_OCCUPY_POS: Dict[Home_names, Point] = {"lb": Point(0.2, 0.2), "rt": Point(2.8, 1.8)}
 
-HOME_NAME: Home_names = "lb"
-ENEMY_HOME_NAME: Optional[Home_names] = "rt"
+HOME_NAME: Home_names = "rt"
+ENEMY_HOME_NAME: Optional[Home_names] = "lb"
 
 HOME_DISPLAY_COLOR: Tuple[int, int, int] = (255, 80, 80)
 ENEMY_HOME_DISPLAY_COLOR: Tuple[int, int, int] = (80, 80, 255)

@@ -188,7 +188,6 @@ class Camera:
         cv2.waitKey(-1)
 
         # 生成变换矩阵
-        corner_list = [(29, 803), (1168, 959), (1067, 49), (211, 258)]
         assert len(corner_list) == 4
         self.transform_to_top = cv2.getPerspectiveTransform(np.array(corner_list, dtype=np.float32),
                                             np.array([(0, CC.TRANSFORMED_HEIGHT), (CC.TRANSFORMED_WIDTH, CC.TRANSFORMED_HEIGHT), (CC.TRANSFORMED_WIDTH, 0), (0, 0)], dtype=np.float32))

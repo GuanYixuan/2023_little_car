@@ -319,7 +319,7 @@ class Control_panel(QMainWindow, Ui_MainWindow):
 
             # 对付有框小车时, 检查是否能刷新状态
             if CART_STRETAGY:
-                bool_list = [(item.in_base == "") and (item.state == Item_state.VISIBLE) and item.coord.in_range(*AC.ST_AVAIL_BLOCK_LIMIT) for item in camera_message.item_list]
+                bool_list = [(item.in_base == "") and (item.state == Item_state.VISIBLE) and item.coord.in_range(*AC.ST_AVAIL_BLOCK_LIMIT) and (item.stable_frames >= 3) for item in camera_message.item_list]
                 if np.count_nonzero(bool_list) == 0:
                     self.__log_once("[主算法] 进入居家状态", COMMAND_COLOR)
                     status = "home"
