@@ -3,8 +3,8 @@ import math
 # 测量定义
 W = 320
 H = 240
-CY_MIN = 100
-CY_MAX = 130
+CY_MIN = 145
+CY_MAX = 170
 CX_MIN = 165
 CX_MAX = 187
 
@@ -22,9 +22,9 @@ def Get_dy(obj):
 
 def dy_to_forward(dy): # 当阈值大于0时均需要移动
     if dy <= 5 and dy > 0:
-        forward_mm = 15
+        forward_mm = 5
     elif dy <= 10 and dy > 5:
-        forward_mm = 25
+        forward_mm = 15
     elif dy <= 20 and dy > 10:
         forward_mm = 35
     elif dy > 20 and dy <= 55:

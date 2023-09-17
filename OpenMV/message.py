@@ -54,3 +54,16 @@ def Forward_Command(signal: int): # 转发信息
     elif signal == PLACE_FAILED:
         command.extend(PLACE_FAILED_CONTENT.encode('utf-8'))
     return command
+
+def Servo_Command(servo_serial: int, angle_degrees: int): # 开合舵机: servo_serial 1 俯仰舵机: servo_serial 2
+    instruction_type = 0x40
+    command = bytearray([instruction_type])
+    servo_bytes = servo_serial.to_bytes(1, 'little')
+    angle_bytes = angle_degrees.to_bytes(2, 'little')
+
+    command.extend(servo_bytes)
+    command.extend(angle_bytes)
+
+    while len(command) < 8:
+        command.append(0x00)
+    return command
